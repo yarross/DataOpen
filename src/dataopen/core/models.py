@@ -46,6 +46,33 @@ class CameraModel:
         return CameraModel(width, height, f, f, width / 2.0, height / 2.0,
                            np.asarray(world_to_camera, dtype=np.float64), near)
 
+    @staticmethod
+    def from_pose(width: int, height: int, pos, forward, right, up,
+                  fov_v_deg: Optional[float] = None, fov_h_deg: Optional[float] = None,
+                  near: float = 0.1) -> "CameraModel":
+        """Build a camera from an engine pose: position + the world-space directions of screen
+        forward / right / up. Handedness-proof: x = (p-pos).right, y = -(p-pos).up, z = (p-pos).forward,
+        so every engine (Unity LH Y-up, UE LH Z-up, Source, RED4 RH Z-up) only reports its own basis."""
+        pos = np.asarray(pos, dtype=np.float64)
+        rows = []
+        for v in (right, [-c for c in up], forward):
+            v = np.asarray(v, dtype=np.float64)
+            n = np.linalg.norm(v)
+            if not np.isfinite(n) or n < 1e-9:
+                raise ValueError("camera basis vector is zero or not finite")
+            rows.append(v / n)
+        R = np.stack(rows)
+        M = np.eye(4)
+        M[:3, :3] = R
+        M[:3, 3] = -R @ pos
+        if fov_v_deg is not None:
+            f = (height / 2.0) / np.tan(np.radians(fov_v_deg) / 2.0)
+        elif fov_h_deg is not None:
+            f = (width / 2.0) / np.tan(np.radians(fov_h_deg) / 2.0)
+        else:
+            raise ValueError("camera needs fov_v_deg or fov_h_deg")
+        return CameraModel(width, height, f, f, width / 2.0, height / 2.0, M, near)
+
     @property
     def intrinsics(self) -> np.ndarray:
         return np.array([[self.fx, 0, self.cx], [0, self.fy, self.cy], [0, 0, 1.0]])
@@ -131,6 +158,16 @@ class EntityState:
     meta: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class Probe:
+    """A world point plus where the *engine itself* says it lands on screen (None = off-screen).
+    The core re-projects `world` with its own math and compares: this catches wrong FOV, y-flip,
+    handedness and unit-scale bugs in an adapter without any ground-truth images."""
+
+    world: tuple[float, float, float]
+    screen: Optional[tuple[float, float]]
+
+
 @dataclass(eq=False)
 class FrameSnapshot:
     """Everything captured at ONE engine instant. Pixels stay engine-side behind
@@ -142,6 +179,7 @@ class FrameSnapshot:
     entities: list[EntityState]
     depth: Optional[np.ndarray] = None       # (h, w) z-depth in meters of occluders, inf = none
     thumbnail: Optional[np.ndarray] = None   # tiny grayscale for near-duplicate hashing
+    probes: Optional[list[Probe]] = None
     meta: dict[str, Any] = field(default_factory=dict)
 
 

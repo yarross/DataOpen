@@ -202,7 +202,7 @@ class _Bridge(ICaptureBridge):
         gray = img.mean(axis=2)
         thumb = gray[: gray.shape[0] // 8 * 8, : gray.shape[1] // 9 * 9]
         thumb = thumb.reshape(8, thumb.shape[0] // 8, 9, thumb.shape[1] // 9).mean(axis=(1, 3))
-        return FrameSnapshot(req.frame_id, w.tick, cam, entities, depth, thumb, {"wall": wall})
+        return FrameSnapshot(req.frame_id, w.tick, cam, entities, depth, thumb, meta={"wall": wall})
 
     def _depth(self, cam: CameraModel, wall) -> np.ndarray:
         h, wd = cam.height // 2, cam.width // 2  # depth rendered at half resolution

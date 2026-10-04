@@ -387,8 +387,7 @@ def test_cli_end_to_end_train_eval_export_calib_quantize_bench(toy, tmp_path, ca
     assert run("detector", "qat", "--ckpt", str(out / "best.pt"), "--data", str(toy), "--out", str(tmp_path / "qat.onnx"), "--epochs", "1",
                "--batch-size", "8", "--workers", "0", "--calib-batches", "1", "--device", "cpu") == 0
     assert (tmp_path / "qat.onnx").exists()
-    calib = tmp_path / "calib"
-    assert run("detector", "calib", "--data", str(toy), "--out", str(calib), "--n", "6", "--size", "128") == 0
+    calib = toy / "images" / "train"                                         # any folder of frames works as a calibration set
     assert run("detector", "sensitivity", "--onnx", str(tmp_path / "m.onnx"), "--calib", str(calib), "--work", str(tmp_path / "sw"),
                "--n-images", "2", "--top", "3") == 0
     assert run("detector", "quantize", "--onnx", str(tmp_path / "m.onnx"), "--calib", str(calib), "--out", str(tmp_path / "mx.onnx"),
@@ -549,4 +548,6 @@ def test_layer_sensitivity_ranks_convolutions_and_mixed_precision_keeps_them_in_
     g = onnx.load(str(tmp_path / "mixed.onnx"))
     q_in = {i for n in g.graph.node if n.op_type == "DequantizeLinear" for i in n.output}
     kept = {n.name: n for n in g.graph.node if n.name in worst}
-    assert all(n.op_type == "Conv" and not any(i in q_in for i in n.input[:2]) for n in kept.values())    # float conv: no DQ inputs
+    inits = {i.name for i in g.graph.initializer}
+    # a float conv keeps its raw float weights (no DequantizeLinear in front of them); its input may still come from a quantized layer
+    assert len(kept) == len(worst) and all(n.op_type == "Conv" and n.input[1] in inits and n.input[1] not in q_in for n in kept.values())

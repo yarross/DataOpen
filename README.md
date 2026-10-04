@@ -20,6 +20,7 @@ dataopen verify  runs/a ; dataopen preview runs/a       # QA и контактн
 |---|---|
 | [docs/RUNBOOK.md](docs/RUNBOOK.md) | запуск на каждой игре, таблицы «симптом → что делать», масштабирование |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | устройство, решения, разметка и видимость, узкие места, риски |
+| [docs/QUALITY.md](docs/QUALITY.md) | замкнутый цикл: проверка кадров моделью в памяти, адаптивная рандомизация, метаданные сложности |
 | [docs/PROTOCOL.md](docs/PROTOCOL.md) | протокол core ↔ мод для авторов модов |
 | [docs/MODDING.md](docs/MODDING.md) | как добавить игру |
 | [docs/GAMES.md](docs/GAMES.md) | выбор игр и чек-лист для новой |

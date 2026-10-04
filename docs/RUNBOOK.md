@@ -101,6 +101,25 @@ dataopen doctor --game rust
 Время суток и погода меняются на сервере командами из `[server] scene_begin` профиля (имена команд — `VERIFY`, правятся без
 кода). Клиент только наблюдает и снимает. Игра тяжёлая и часто обновляется: после каждого обновления снова `doctor`.
 
+## 4a. Контроль качества кадров (замкнутый цикл)
+
+Подробно: [QUALITY.md](QUALITY.md). Три уровня, от простого к полному:
+
+```bash
+# 1) без модели: отсечь сломанные скелеты, пустые кадры и людей, неразличимых в пикселях (GPU не нужен)
+dataopen collect --game gmod --out runs/a --frames 1000 --quality-static
+# 2) с вашей моделью: проверьте её на одной картинке, потом включите
+dataopen eval-image --model yolov8n-pose.onnx --image sample.png --keypoint-map coco17
+dataopen collect --game gmod --out runs/a --frames 1000 --quality-model yolov8n-pose.onnx --quality-device cuda
+# 3) плюс адаптивная рандомизация (учится, какие условия и внешности дают сложные кадры)
+dataopen collect ... --quality-model yolov8n-pose.onnx --adaptive
+```
+
+После сбора смотрите `closed_loop_report.md` (что отброшено и почему, где модель страдает), `quality/rejects/` и
+`quality/audit/` (глазами: не режем ли мы годные кадры). Много `quality_drop_invisible` на дневных кадрах значит, что порог
+различимости слишком строгий (`[quality.features]`), а не что игра плоха. Модель не загрузилась: `device="tensorrt"` без
+TensorRT тихо переключится на CUDA/CPU (предупреждение в логе); ставьте `onnxruntime-gpu` для GPU.
+
 ## 5. Масштабирование и эксплуатация
 
 - **Несколько экземпляров игры**: у каждого свой ящик (`--mailbox`) и своя часть сцен:

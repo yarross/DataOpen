@@ -42,15 +42,24 @@ game  → <dir>/res.json   {"id":N,"result":{...}}  |  {"id":N,"error":{"message
 | `selftest` | — | `{"checks":[{name, ok, detail, hint?, data?}]}` |
 | `health` | — | `{ok, frames, ...}` |
 | `shutdown` | — | `{}` |
+| `peek` | `frame_token`, `max_side?`, `shm?{name, capacity}` | `{transport:"shm", width, height, format:"rgb24"}` или `{transport:"file", staged, width, height}` |
 
 `hello` — мод (пере)инициализирует состояние. `capabilities`: `probes`, `engine_visibility`, `hull_points`,
-`image_engine`, `deterministic_step`. `image_engine` ⇒ мод сам пишет картинку по `commit`; иначе кадр снимает ядро
+`image_engine`, `deterministic_step`, `image_peek`, `image_shm`. `image_engine` ⇒ мод сам пишет картинку по `commit`; иначе кадр снимает ядро
 (`host`-режим: мод замораживает игру до `release`).
 
 `parameter_space` — что игра умеет рандомизировать (ядро выбирает значения, мод применяет). Типы параметров:
 `{"type":"uniform","lo","hi"}`, `loguniform`, `categorical` (`choices`, `weights?`), `constant` (`value`).
 Группы: `environment` (дополняет значения ядра: `time_of_day`, `weather`, `cloud_cover`, `fog_density`, ...),
 `actor` (на сцену), `actor_frame` (на кадр).
+
+### Пиксели для проверки качества (`peek`)
+
+`image_peek`: мод отдаёт пиксели ещё не закоммиченного кадра (для валидации в памяти, `docs/QUALITY.md`), **не расходуя**
+кадр: `commit`/`discard` по-прежнему обязательны. `image_shm`: ядро создало сегмент общей памяти и сообщает его имя в `shm`;
+мод пишет туда сырой RGB24, **строки сверху вниз**, и отвечает `transport:"shm"` (ядро читает без копии). Без общей памяти
+(Lua) мод кладёт PNG в staged-файл и отвечает `transport:"file"`; ядро читает и удаляет файл. `max_side` — подсказка, её можно
+игнорировать.
 
 ### Снимок кадра (`capture_frame`)
 

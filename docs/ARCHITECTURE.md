@@ -8,6 +8,8 @@ flowchart LR
   subgraph Core["Universal Core (Python)"]
     ORCH["Orchestrator<br/>session / scene / frame"] --> DR["Domain Randomization<br/>LHS, seeds, rules"]
     ORCH --> AB["Annotation Builder<br/>projection, visibility, bbox"]
+    AB --> QUAL["Quality & Evaluation Core<br/>gates, baseline model, OKS/IoU, verdict<br/>(docs/QUALITY.md)"]
+    QUAL -- "verdict" --> DR
     AB --> VAL["Validators<br/>negatives, dedup, unlabeled"]
     ORCH --> CAL["Calibration<br/>engine-vs-core probes"]
     ORCH --> EXP["Export<br/>JSONL, COCO, YOLO, card"]
@@ -38,6 +40,7 @@ flowchart LR
 | Режим **observe** (брать существующих персонажей) наравне со `spawn` | запасной путь, если спавн в игре не заработал; для Unity-игр основной |
 | Всё игровое задаётся **данными** (профили TOML, `[bones]`) | чинится без перекомпиляции мода |
 | `doctor` перед сбором, `collect` отказывается при FAIL | самая частая ошибка — тихо испорченная разметка |
+| **Замкнутый цикл качества** ([QUALITY.md](QUALITY.md)): кадр проверяется в памяти до записи, вердикт управляет рандомизацией | движок честно отдаёт скелет и для чёрного кадра; нужна проверка «имеет ли смысл эта картинка». Выброс только по свидетельствам, не зависящим от модели (иначе смещение отбора) |
 
 ## Данные и разметка
 
@@ -56,7 +59,9 @@ flowchart LR
 
 Выход: `images/{split}/`, `labels/{split}/` (YOLO-Pose), `annotations/{split}.jsonl` (канонический источник),
 `annotations/coco_{split}.json`, `data.yaml` (`kpt_shape`, `flip_idx`), `manifest.json`, `report.json`, `qa_report.*`,
-`DATASET_CARD.json` (игра, версии, схема, сиды, хэш конфига, счётчики, **происхождение ассетов**).
+`DATASET_CARD.json` (игра, версии, схема, сиды, хэш конфига, счётчики, **происхождение ассетов**). При включённом контроле
+качества добавляются `quality_index.json`, `closed_loop_report.*`, `quality/` (отбракованные примеры и аудит),
+`feedback_state.json` и поля сложности в COCO.
 
 ## Рандомизация
 

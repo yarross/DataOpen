@@ -1,0 +1,28 @@
+name: csharp
+# Compile-checks the Unity/BepInEx plugins WITHOUT the games: references come from public NuGet packages
+# (BepInEx.Core from the BepInEx feed, UnityEngine.Modules from nuget.org). The DLLs are uploaded as artifacts; the
+# ones you ship are built against your own game with `dataopen install --game <valheim|rust> --dir <game folder>`.
+on:
+  push:
+    paths: ["adapters/unity/**", ".github/workflows/csharp.yml"]
+  pull_request:
+    paths: ["adapters/unity/**"]
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        plugin: [DataOpen.Valheim, DataOpen.Rust]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - name: Build ${{ matrix.plugin }}
+        run: dotnet build adapters/unity/${{ matrix.plugin }}/${{ matrix.plugin }}.csproj -c Release --configfile adapters/unity/NuGet.config
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.plugin }}
+          path: adapters/unity/${{ matrix.plugin }}/bin/Release/net46/${{ matrix.plugin }}.dll

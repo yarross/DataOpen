@@ -1,0 +1,7 @@
+{
+  "name": "DataOpen (Python + .NET)",
+  "image": "mcr.microsoft.com/devcontainers/python:3.11",
+  "features": { "ghcr.io/devcontainers/features/dotnet:2": { "version": "8.0" } },
+  "postCreateCommand": "pip install -e '.[dev,capture,quality]' tree-sitter tree-sitter-c-sharp && python -m pytest -q",
+  "customizations": { "vscode": { "extensions": ["ms-python.python", "ms-dotnettools.csharp"] } }
+}

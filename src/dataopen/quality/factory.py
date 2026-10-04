@@ -8,6 +8,7 @@ from ..core.interfaces import IGameAdapter
 from ..core.schema import SkeletonSchema
 from .evaluators.decode import KeypointMap
 from .feedback import AdaptiveRandomizer, FeedbackConfig
+from .features import FeatureConfig
 from .interfaces import IModelEvaluator
 from .pipeline import QualityConfig, QualityPipeline
 from .policy import PolicyConfig
@@ -65,7 +66,8 @@ def build_quality(spec: dict[str, Any], schema: SkeletonSchema) -> Optional[Qual
         return None
     cfg_kw = {k: v for k, v in spec.items() if k in _fields(QualityConfig) and k not in ("policy", "features", "enabled")}
     policy = PolicyConfig(**{k: v for k, v in (spec.get("policy") or {}).items() if k in _fields(PolicyConfig)})
-    cfg = QualityConfig(policy=policy, **cfg_kw)
+    features = FeatureConfig(**{k: v for k, v in (spec.get("features") or {}).items() if k in _fields(FeatureConfig)})
+    cfg = QualityConfig(policy=policy, features=features, **cfg_kw)
     return QualityPipeline(schema, build_evaluator(spec, schema), cfg)
 
 

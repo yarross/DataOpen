@@ -31,6 +31,7 @@ from .core.orchestrator import CalibrationError, DatasetOrchestrator, SessionAbo
 from .core.preview import make_preview
 from .core.qa import verify_dataset, write_reports
 from .factory import build_adapter
+from .core.annotation import AnnotationBuilder, AnnotationConfig
 from .quality.factory import QualityConfigError, build_quality, build_randomizer
 from .profiles import ProfileError, list_profiles, load_profile
 
@@ -75,6 +76,8 @@ def _quality_spec(profile_quality: dict, a) -> dict:
         spec["max_inflight"] = a.quality_inflight
     if a.quality_every is not None:
         spec["sample_every"] = a.quality_every
+    if getattr(a, "quality_policy", None):
+        spec["policy_file"] = a.quality_policy
     return spec
 
 
@@ -137,13 +140,20 @@ def _cmd_collect(a) -> int:
                         provenance=dict(prof.provenance) | ({"note": a.provenance_note} if a.provenance_note else {}),
                         **{k: v for k, v in s.items() if k not in {"provenance"}})
     quality_spec = _quality_spec(prof.quality, a)
+    quality_spec.setdefault("policy_file", str(out / "quality_policy.toml"))   # may be created while the run is going
+    builder = None
+    if quality_spec.get("min_person_px") is not None:
+        mp = float(quality_spec["min_person_px"])
+        builder = AnnotationBuilder(adapter.info.schema, AnnotationConfig(min_bbox_height_px=mp,
+                                                                         negligible_height_px=min(12.0, mp)))
     try:
         quality = build_quality(quality_spec, adapter.info.schema)
-        randomizer = build_randomizer(adapter, a.seed, a.adaptive, quality_spec.get("feedback"))
+        randomizer = build_randomizer(adapter, a.seed, a.adaptive, quality_spec.get("feedback"),
+                                      quality_spec.get("balance"))
     except (QualityConfigError, ImportError, OSError, RuntimeError) as e:
         print(f"cannot start the quality subsystem: {e}")
         return EXIT_USAGE
-    orch = DatasetOrchestrator(adapter, cfg, randomizer=randomizer, quality=quality)
+    orch = DatasetOrchestrator(adapter, cfg, randomizer=randomizer, builder=builder, quality=quality)
     if threading.current_thread() is threading.main_thread():
         signal.signal(signal.SIGINT, lambda *_: (print("\nstopping after the current frame..."), orch.request_stop()))
     try:
@@ -169,6 +179,20 @@ def _cmd_verify(a) -> int:
         print(f"  {i.severity:<7} {i.code:<28} {i.where}: {i.message}")
     print(f"report: {Path(a.dataset) / 'qa_report.md'}")
     return EXIT_OK if rep.ok else EXIT_FAILED_CHECK
+
+
+def _cmd_requalify(a) -> int:
+    from .quality.requalify import load_policy_spec, requalify
+    try:
+        res = requalify(Path(a.dataset), load_policy_spec(Path(a.policy)))
+    except (OSError, ValueError) as e:
+        print(f"requalify failed: {e}")
+        return EXIT_USAGE
+    print(f"frames={res['frames']} verdicts={res['verdicts']} excluded={res['excluded']}")
+    for k, v in sorted(res["transitions"].items()):
+        print(f"  {k}: {v}")
+    print(f"written: {Path(a.dataset) / 'quality_requalified.csv'}, {Path(a.dataset) / 'excluded_frames.txt'}")
+    return EXIT_OK
 
 
 def _cmd_preview(a) -> int:
@@ -257,6 +281,8 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--quality-static", action="store_true", help="cheap gates only: no model")
     q.add_argument("--quality-inflight", type=int, help="frames validated while the engine renders the next ones")
     q.add_argument("--quality-every", type=int, help="run the model on every N-th frame")
+    q.add_argument("--quality-policy", help="TOML with filtering thresholds, re-read while running (default: "
+                                            "<out>/quality_policy.toml if present)")
     q.add_argument("--adaptive", action="store_true", help="feedback-driven domain randomization")
     c.set_defaults(fn=_cmd_collect)
 
@@ -264,6 +290,11 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("dataset")
     v.add_argument("--no-images", action="store_true", help="skip image file checks")
     v.set_defaults(fn=_cmd_verify)
+
+    rq = sub.add_parser("requalify", help="re-run new quality thresholds on a finished dataset (no pixels needed)")
+    rq.add_argument("dataset")
+    rq.add_argument("--policy", required=True, help="TOML with PolicyConfig keys (see docs/QUALITY.md)")
+    rq.set_defaults(fn=_cmd_requalify)
 
     pv = sub.add_parser("preview", help="contact sheet with labels")
     pv.add_argument("dataset")

@@ -28,11 +28,17 @@ device = "cpu"                     # cpu | cuda | tensorrt
 keypoint_map = "coco17"            # 17-point COCO model -> our 13 points; "identity" for a model trained on our schema
 max_inflight = 2                   # frames validated while the engine renders the next ones
 sample_every = 1                   # run the model on every N-th frame (cheap gates always run)
+min_person_px = 20                 # a visible person shorter than this rejects the frame (below 12 px: ignored)
 audit_fraction = 0.02              # share of dropped frames kept in quality/audit/ to measure false rejections
 
 [quality.policy]
 phantom_action = "hard"           # hard: spawn mode, a detection with no label is a model false positive
 suspect_action = "quarantine"
+
+[quality.balance]                  # dataset-level control of the adaptive randomizer (docs/QUALITY.md, section 5)
+target_hard_share = 0.30           # desired share of keep_hard among usable frames
+max_reject_share = 0.15            # above this, bins that keep producing rejected frames are suppressed
+uniform_min = 0.10                 # share of draws that always sample the full prior (coverage guarantee)
 
 [quality.feedback]                 # adaptive domain randomization (--adaptive)
 warmup_frames = 150

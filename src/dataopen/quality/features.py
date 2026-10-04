@@ -75,6 +75,11 @@ def _sharpness(img: np.ndarray, bbox) -> float:
     return float(lap.var())
 
 
+def _person_difficulty(perceptibility: float, occlusion: float, size_px: float) -> float:
+    small = 1.0 - float(np.clip(size_px / 120.0, 0.0, 1.0))
+    return float(np.clip(0.45 * (1.0 - perceptibility) + 0.35 * occlusion + 0.20 * small, 0.0, 1.0))
+
+
 def person_features(img: np.ndarray, ann: Annotation, schema: SkeletonSchema, cfg: FeatureConfig) -> PersonFeatures:
     kp = ann.keypoints
     pf = PersonFeatures(ann.entity_id, size_px=float(ann.bbox[3]))
@@ -82,6 +87,8 @@ def person_features(img: np.ndarray, ann: Annotation, schema: SkeletonSchema, cf
     limbs = _limb_pixels(img, ann, schema)
     ring = _ring_mean(img, ann.bbox, cfg.ring_frac)
     if len(limbs) == 0 or ring is None:
+        pf.limiting_factor = "visibility"
+        pf.difficulty = _person_difficulty(0.0, pf.occlusion_index, pf.size_px)
         return pf                                     # perceptibility stays 0
     limb_mean = limbs.mean(axis=0)
     pf.contrast_rate = float(np.linalg.norm(limb_mean - ring) / (255.0 * np.sqrt(3.0)))
@@ -90,7 +97,10 @@ def person_features(img: np.ndarray, ann: Annotation, schema: SkeletonSchema, cf
     c = np.clip(pf.contrast_rate / cfg.contrast_ref, 0.0, 1.0)
     b = np.clip((pf.brightness - cfg.dark_floor) / (cfg.dark_ref - cfg.dark_floor), 0.0, 1.0)
     s = np.clip(pf.size_px / cfg.size_ref, 0.0, 1.0)
-    pf.perceptibility = float(c * b * (0.5 + 0.5 * s))
+    sz = 0.5 + 0.5 * s
+    pf.perceptibility = float(c * b * sz)
+    pf.limiting_factor = min((("contrast", c), ("brightness", b), ("size", sz)), key=lambda kv: kv[1])[0]
+    pf.difficulty = _person_difficulty(pf.perceptibility, pf.occlusion_index, pf.size_px)
     return pf
 
 

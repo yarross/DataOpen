@@ -54,8 +54,9 @@ flowchart LR
   end
   ORCH --> AB --> CAP
   CAP -- "pixels: shared memory / staged file / host grab" --> GATES --> EVAL --> MET --> POL
-  POL -- "keep: commit" --> CAP
-  POL -- "drop: discard + evidence" --> CAP
+  POL -- "keep_clean / keep_hard: commit" --> CAP
+  POL -- "quarantine: commit to quarantine/ (full, for audit)" --> CAP
+  POL -- "reject: discard + evidence" --> CAP
   POL -- "verdict" --> FB -- "warped sampling" --> ORCH
   POL --> EXP
 ```
@@ -96,9 +97,11 @@ sequenceDiagram
     Q->>Q: дешёвые ворота: выбросить без инференса?
     Q->>Q: модель -> предсказания -> OKS/IoU/фантомы -> вердикт
     Q-->>O: вердикт (по порядку захвата)
-    alt keep / keep_hard / hard_negative
-      O->>M: commit (кодирование и запись на стороне игры)
-    else drop / suspect
+    alt keep_clean / keep_hard
+      O->>M: commit в датасет (кодирование и запись на стороне игры)
+    else quarantine
+      O->>M: commit в quarantine/ (полный мини-датасет для аудита, в обучение не идёт)
+    else reject
       O->>M: discard; quality/rejects, rejects.jsonl, аудит
     end
     O->>F: observe(вердикт)
@@ -115,7 +118,9 @@ sequenceDiagram
 
 | Поле | Смысл |
 |---|---|
-| `tier` | `keep`, `keep_hard`, `hard_negative`, `drop_invisible`, `drop_gt_sanity`, `drop_render`, `drop_phantom`, `suspect`, `rejected` |
+| `verdict` | публичный вердикт из 4 классов (таблица ниже) |
+| `tier` | детальный код причины: `keep`, `keep_hard`, `hard_negative`, `drop_invisible`, `drop_gt_sanity`, `drop_render`, `drop_phantom`, `suspect`, `rejected` |
+| `policy_version` | какая версия правил вынесла вердикт (правила можно менять во время сбора, см. 5.2) |
 | `reasons[]` | почему: `model_blind_but_visible(oks=0.04)`, `imperceptible_person(entities=[3])`, ... |
 | `difficulty` | 0..1: статическая (различимость 45%, окклюзия 35%, размер 20%), с моделью: 50/50 с `1 − mean OKS` |
 | `occlusion_index` | доля ключевых точек, не видимых (0..1) |
@@ -125,6 +130,17 @@ sequenceDiagram
 | `metrics` | `QualityMetrics` (ниже) |
 | `features` | `FrameFeatures` (ниже) |
 
+### Четыре вердикта
+
+| `verdict` | Что это | Куда попадает | `tier` |
+|---|---|---|---|
+| `keep_clean` | идеальный кадр: годный, модель справляется | датасет | `keep` |
+| `keep_hard` | человек виден, а модель ошибается: **самые ценные** кадры | датасет, вес `1 + difficulty` | `keep_hard`, `hard_negative` |
+| `quarantine` | метки и модель уверенно противоречат друг другу (человек, которого нет в разметке; уверенная модель с другими точками): либо баг разметки, либо ложное срабатывание | `quarantine/`: **полный** мини-датасет (`images/`, `labels/`, `annotations/`, COCO), в обучение не идёт, счётчик `target_frames` не увеличивает | `suspect`, `drop_phantom` |
+| `reject` | мусор: сломанный скелет, пустой/пересвеченный кадр, неразличимый человек | нигде, остаётся запись в `quality/rejects.jsonl`, выборка примеров и аудит | `drop_gt_sanity`, `drop_render`, `drop_invisible`, `rejected` |
+
+Просмотр карантина: `dataopen preview <out>/quarantine`. Новый тип причины обязан получить вердикт (тест это проверяет).
+
 ### Метрики (`QualityMetrics`)
 `evaluated, backend, latency_ms, n_gt, n_pred, n_phantom, mean_oks, min_oks, oks_spread, recall, mean_iou, mean_conf,
 max_disagreement_score, persons[{entity_id, oks, iou, score, keypoint_conf_mean}]`.
@@ -133,15 +149,23 @@ OKS по COCO; сигмы по ключевым точкам в `SkeletonSchema.
 
 ### Признаки (`FrameFeatures`)
 `has_pixels, luma_mean, luma_std, saturated_frac, gt_issues[], persons[{contrast_rate, brightness, occlusion_index,
-size_px, sharpness, perceptibility}]`. Различимость 0..1 = контраст × яркость × размер. Пиксели берутся по **видимым**
+size_px, sharpness, perceptibility, limiting_factor, difficulty}]`. `limiting_factor` (`contrast`/`brightness`/`size`)
+попадает в причину отбраковки: `imperceptible_person(entity 3: limited_by=contrast (contrast=0.012, luma=0.08, h=34px))`.
+Различимость 0..1 = контраст × яркость × размер. Пиксели берутся по **видимым**
 суставам и костям между ними, поэтому камуфляж и сливающаяся с фоном одежда ловятся.
 
 ### Метаданные в датасете
 - `annotations/*.jsonl`: `meta.quality = verdict.to_dict()`, `meta.units` (единичные выборки: можно воспроизвести кадр),
-  `meta.actors`, `meta.actor_frame`; в каждой аннотации `meta.{oks, occlusion_index, contrast_rate, perceptibility}`.
-- COCO: у `images` поля `tier, difficulty, weight, occlusion_index, contrast_rate, mean_oks`; у `annotations`
-  `oks, occlusion_index, contrast_rate, perceptibility` (обычные загрузчики игнорируют лишние поля).
-- `quality_index.json`: `frame_id → {tier, difficulty, weight, ...}` для curriculum и взвешенного обучения.
+  `meta.actors`, `meta.actor_frame`; в каждой аннотации `meta.{oks_score, difficulty_score, occlusion_index, contrast_rate,
+  perceptibility}`.
+- COCO: у `images` поля `verdict, tier, difficulty_score, weight, occlusion_index, contrast_rate, oks_score`; у `annotations`
+  `oks_score, difficulty_score, occlusion_index, contrast_rate, perceptibility` (обычные загрузчики игнорируют лишние
+  поля; старые имена `difficulty`, `mean_oks`, `oks` пока дублируются).
+- **YOLO-Pose `.txt` остаётся строго стандартным** (5 + 3·K колонок): лишние колонки ломают Ultralytics. Метаданные лежат
+  рядом и соединяются по `frame_id`: `quality_index.csv` (кадр: verdict, tier, difficulty_score, contrast_rate,
+  occlusion_index, oks_score, weight, policy_version, причины; колонка `set` = dataset | quarantine) и
+  `quality_persons.csv` (человек в кадре).
+- `quality_index.json`: то же в JSON для curriculum и взвешенного обучения.
 - `closed_loop_report.{json,md}`: что видел валидатор и чему научился рандомизатор, таблица «где модель страдает».
 - `quality/rejects.jsonl`, `quality/rejects/<tier>/`, `quality/audit/<tier>/`: свидетельства по выброшенным кадрам.
 - `feedback_state.json`: состояние адаптации (для resume).
@@ -160,6 +184,47 @@ size_px, sharpness, perceptibility}]`. Различимость 0..1 = конт�
 - Отказы до стадии качества (человек слишком мелкий и т.п.) тоже учитываются как потраченная впустую попытка.
 - Прогрев `warmup_frames` равномерно, дальше обновление каждые `update_every` кадров. Состояние сохраняется; значения
   зависят от истории, поэтому в запись пишутся единичные выборки.
+
+### 5.1. Баланс датасета и защита от OOD (`quality/balance.py`)
+
+Наклоны по бинам отвечают на вопрос «какие значения дают ценные кадры». Но они не знают, **каким становится датасет
+целиком**. `BalanceController` смотрит на скользящее окно вердиктов (200) и крутит три глобальные ручки в заданных пределах:
+
+| Симптом в окне | Реакция |
+|---|---|
+| Доля `keep_hard` среди годных ниже цели (`target_hard_share`, 0.30): датасет тонет в простых кадрах | `gamma_scale`↑ (резче наклоны) и чаще повтор запомненных крайних случаев |
+| Доля `keep_hard` выше цели: генератор уехал в угол экстремальных условий | `gamma_scale`↓; если выше цели + `hard_margin` ещё и `uniform_mix`↑ (до 0.5) |
+| Доля `reject` выше `max_reject_share` (0.15): тёмные/нереалистичные области | бины с высокой долей брака подавляются сильнее (`(1 − drop_rate)^drop_penalty`) |
+
+`uniform_mix` (не меньше 0.10) это доля выборок, которые обходят все наклоны и берут нетронутую стратифицированную выборку
+по всему приору: гарантия охвата и несмещённые оценки по бинам. Цена: адаптация чуть слабее (остаточный «мусорный» регион
+не сжимается до нуля).
+
+**Дрейф** (`closed_loop_report`, ключ `drift`): для каждого параметра KL(реальное распределение ‖ приор), нормированная
+энтропия и охват наименее покрытого бина; `drift_warnings`, если KL > 0.35 или бин получил < 8% своей массы. Это число
+показывает ревьюеру, что рандомизация не схлопнулась.
+
+Измерено на mock (3 зерна, 300 кадров, `--quality-sim`; шумно, это не гарантия для реальной игры):
+
+| режим | попыток на 300 кадров | доля `keep_hard` |
+|---|---|---|
+| равномерная рандомизация | ~852 | 0.28 |
+| адаптивная, без регулятора | ~683 | 0.35 |
+| адаптивная + регулятор (цель 0.30) | ~667 | 0.32 |
+
+На синтетическом потоке «сложно, если густой туман» регулятор держит долю сложных около запрошенной цели (0.30 → 0.30–0.36;
+0.10 → 0.14–0.16), а без него майнинг уезжает до ~0.45 (тест `test_quality_balance.py`).
+
+### 5.2. Правила «на лету» и пересчёт готового датасета
+
+- `IQualityPolicy.reconfigure(spec)` меняет пороги между кадрами и увеличивает `version`, который пишется в каждый вердикт.
+  `QualityPipeline` перечитывает TOML-файл (`--quality-policy`, по умолчанию `<out>/quality_policy.toml`), когда меняется его
+  mtime. Опечатка в ключе или битый TOML: правила **не** меняются, ошибка попадает в `policy_changes` отчёта и в лог.
+  Формат: плоский файл или таблица `[policy]` с полями `PolicyConfig` (`blind_oks`, `hard_oks`, `invisible_perceptibility`,
+  `min_contrast_rate`, `min_brightness`, `phantom_action`, ...).
+- `dataopen requalify <out> --policy new.toml` применяет новые пороги к сохранённым признакам и метрикам (политика это чистая
+  функция, пиксели не нужны): `quality_requalified.csv` (старый → новый вердикт) и `excluded_frames.txt`. **Ужесточить можно,
+  вернуть уже выброшенные кадры нельзя**: у них нет пикселей; для спорных случаев и существует карантин.
 
 ## 6. Производительность
 
@@ -188,9 +253,25 @@ dataopen collect --game gmod --out runs/a --frames 1000 --quality-model yolov8n-
 dataopen collect --game mock --out runs/demo --frames 300 --quality-sim --adaptive
 ```
 
-Настройки: секции `[quality]`, `[quality.policy]`, `[quality.feedback]` в профиле игры. Для spawn-режима (GMod, mock)
-`phantom_action = "hard"`, для observe-режима (Unity) `"drop"`: там мод может не знать о реальном человеке, и тогда
-детекция модели это единственная защита от неразмеченного человека в кадре.
+Настройки: секции `[quality]` (`min_person_px = 20`: видимый человек ниже 20 px бракует кадр, ниже 12 px игнорируется),
+`[quality.policy]`, `[quality.balance]`, `[quality.feedback]` в профиле игры. Для spawn-режима (GMod, mock)
+`phantom_action = "hard"`, для observe-режима (Unity) `"quarantine"` (`"drop"` принимается как синоним): там мод может не знать
+о реальном человеке, и тогда детекция модели это единственная защита от неразмеченного человека в кадре, а кадр уходит на
+аудит, а не молча в мусор.
+
+### Пороги по умолчанию
+
+| Порог | Значение | Что делает |
+|---|---|---|
+| `min_person_px` (`AnnotationConfig.min_bbox_height_px`) | 20 | человек ниже: кадр бракуется до записи на диск; ниже 12 px не размечается, кадр остаётся |
+| `invisible_perceptibility` | 0.12 | различимость (контраст × яркость × размер) ниже: `reject` |
+| `min_contrast_rate`, `min_brightness` | 0 (выкл.) | явные пороги контраста с фоном и яркости конечностей |
+| `blank_luma_std`, `saturated_frac` | 0.01, 0.97 | пустой / пересвеченный кадр: `reject` |
+| `blind_oks`, `hard_oks` | 0.15, 0.60 | модель слепа / страдает при видимом человеке: `keep_hard` |
+| `suspect_conf` | 0.70 | уверенное несогласие модели: `quarantine` |
+| `target_hard_share`, `max_reject_share` | 0.30, 0.15 | цели регулятора баланса |
+
+Значения подобраны на mock; на реальной модели их надо калибровать (`eval-image` + `quality_index.csv`).
 
 ## 8. Ограничения, о которых надо знать
 

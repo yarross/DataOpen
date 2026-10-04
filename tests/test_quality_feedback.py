@@ -5,6 +5,7 @@ import numpy as np
 from dataopen.adapters.mock import MockGameAdapter
 from dataopen.core.models import FrameKind
 from dataopen.core.randomization import DomainRandomizationController
+from dataopen.quality.balance import BalanceConfig
 from dataopen.quality.feedback import AdaptiveRandomizer, FeedbackConfig, UnitWarp
 from dataopen.quality.types import FrameFeatures, QualityMetrics, QualityVerdict, Tier
 
@@ -14,8 +15,10 @@ def verdict(tier=Tier.KEEP, utility=0.2, oks=0.9):
     return QualityVerdict(tier, [], 0.3, 0.0, 0.2, 1.0, utility, m, FrameFeatures())
 
 
-def make(seed=1, **fb):
-    cfg = FeedbackConfig(warmup_frames=60, update_every=10, **fb)
+def make(seed=1, balance=None, **fb):
+    """Balance control is off by default here: these tests exercise the per-bin learning mechanics in isolation
+    (tests/test_quality_balance.py covers the dataset-level controller)."""
+    cfg = FeedbackConfig(warmup_frames=60, update_every=10, balance=balance or BalanceConfig(enabled=False), **fb)
     return AdaptiveRandomizer(seed, MockGameAdapter().parameter_space(), feedback=cfg)
 
 

@@ -7,6 +7,7 @@ that is the most valuable kind of training frame, so it is kept and tagged as ha
 """
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 
 from .features import static_difficulty
@@ -24,12 +25,26 @@ class PolicyConfig:
     hard_difficulty: float = 0.65            # static difficulty above this = hard even without a model
     suspect_conf: float = 0.70               # confident prediction disagreeing with labels (keypoints elsewhere)
     suspect_action: str = "quarantine"       # quarantine | keep_hard
-    phantom_action: str = "drop"             # drop | hard  (model sees a person the labels do not contain)
+    phantom_action: str = "quarantine"       # quarantine | hard  ("drop" = quarantine, kept for old configs)
+    min_contrast_rate: float = 0.0           # explicit gate: a person whose limbs differ less from the background is
+                                             # dropped (0 = off, the combined perceptibility score decides)
+    min_brightness: float = 0.0              # explicit gate on the visible limbs' luma (0 = off)
 
 
 class DefaultQualityPolicy(IQualityPolicy):
     def __init__(self, cfg: PolicyConfig = PolicyConfig()) -> None:
         self.cfg = cfg
+        self.version = 0
+
+    def reconfigure(self, spec: dict) -> None:
+        """Apply new thresholds between frames (hot reload). Unknown keys are an error: a typo must not silently
+        leave the old rule in force. The version is stamped on every later verdict."""
+        known = {f.name for f in dataclasses.fields(PolicyConfig)}
+        unknown = sorted(set(spec) - known)
+        if unknown:
+            raise ValueError(f"unknown policy keys {unknown}; known: {sorted(known)}")
+        self.cfg = PolicyConfig(**{**dataclasses.asdict(self.cfg), **spec})
+        self.version += 1
 
     def _verdict(self, tier: Tier, reasons: list[str], difficulty: float, m: QualityMetrics,
                  f: FrameFeatures) -> QualityVerdict:
@@ -42,7 +57,8 @@ class DefaultQualityPolicy(IQualityPolicy):
             utility = 0.1 + 0.4 * difficulty
         else:
             utility = 0.0
-        return QualityVerdict(tier, reasons, float(difficulty), f.mean_occlusion, f.mean_contrast, weight, utility, m, f)
+        return QualityVerdict(tier, reasons, float(difficulty), f.mean_occlusion, f.mean_contrast, weight, utility, m, f,
+                              self.version)
 
     def decide(self, metrics: QualityMetrics, features: FrameFeatures, is_negative: bool) -> QualityVerdict:
         c = self.cfg
@@ -58,9 +74,13 @@ class DefaultQualityPolicy(IQualityPolicy):
                 return self._verdict(Tier.DROP_RENDER, [f"blank_or_saturated(std={features.luma_std:.3f},"
                                                         f"sat={features.saturated_frac:.2f})"], difficulty, metrics, features)
         if not is_negative:
-            bad = [p.entity_id for p in features.persons if p.perceptibility < c.invisible_perceptibility]
+            bad = [p for p in features.persons if p.perceptibility < c.invisible_perceptibility
+                   or (c.min_contrast_rate and p.contrast_rate < c.min_contrast_rate)
+                   or (c.min_brightness and p.brightness < c.min_brightness)]
             if bad:
-                return self._verdict(Tier.DROP_INVISIBLE, [f"imperceptible_person(entities={bad})"], difficulty, metrics, features)
+                why = ", ".join(f"entity {p.entity_id}: limited_by={p.limiting_factor or 'n/a'} "
+                                f"(contrast={p.contrast_rate:.3f}, luma={p.brightness:.3f}, h={p.size_px:.0f}px)" for p in bad[:3])
+                return self._verdict(Tier.DROP_INVISIBLE, [f"imperceptible_person({why})"], difficulty, metrics, features)
 
         if metrics.evaluated:
             if metrics.n_phantom > 0:

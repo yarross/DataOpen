@@ -6,6 +6,7 @@ from typing import Any, Optional
 
 from ..core.interfaces import IGameAdapter
 from ..core.schema import SkeletonSchema
+from .balance import BalanceConfig
 from .evaluators.decode import KeypointMap
 from .feedback import AdaptiveRandomizer, FeedbackConfig
 from .features import FeatureConfig
@@ -71,9 +72,16 @@ def build_quality(spec: dict[str, Any], schema: SkeletonSchema) -> Optional[Qual
     return QualityPipeline(schema, build_evaluator(spec, schema), cfg)
 
 
-def build_randomizer(adapter: IGameAdapter, seed: int, adaptive: bool, feedback: Optional[dict[str, Any]] = None):
-    """The adaptive randomizer (feedback-driven) or None (the orchestrator then builds the plain controller)."""
+def build_randomizer(adapter: IGameAdapter, seed: int, adaptive: bool, feedback: Optional[dict[str, Any]] = None,
+                     balance: Optional[dict[str, Any]] = None):
+    """The adaptive randomizer (feedback-driven) or None (the orchestrator then builds the plain controller).
+    `balance` is the `[quality.balance]` table (also accepted as `[quality.feedback.balance]`)."""
     if not adaptive:
         return None
-    fb = FeedbackConfig(**{k: v for k, v in (feedback or {}).items() if k in _fields(FeedbackConfig)})
+    fb_spec = {k: v for k, v in (feedback or {}).items() if k in _fields(FeedbackConfig) and k != "balance"}
+    bspec = balance if balance is not None else (feedback or {}).get("balance") or {}
+    unknown = sorted(set(bspec) - _fields(BalanceConfig))
+    if unknown:
+        raise QualityConfigError(f"unknown [quality.balance] keys {unknown}; known: {sorted(_fields(BalanceConfig))}")
+    fb = FeedbackConfig(balance=BalanceConfig(**bspec), **fb_spec)
     return AdaptiveRandomizer(seed, adapter.parameter_space(), feedback=fb)

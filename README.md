@@ -14,6 +14,7 @@ dataopen install --game gmod --dir "<папка игры>"       # постав�
 dataopen doctor  --game gmod                            # проверить интеграцию (читайте первый FAIL)
 dataopen collect --game gmod --out runs/a --frames 1000 --provenance-note "<источник и лицензия ассетов>"
 dataopen verify  runs/a ; dataopen preview runs/a       # QA и контактный лист
+dataopen requalify runs/a --policy strict.toml          # новые пороги качества на готовом датасете (docs/QUALITY.md)
 ```
 
 | Документ | О чём |

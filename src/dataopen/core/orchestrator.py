@@ -81,6 +81,7 @@ class SessionReport:
     adapter_errors: int = 0
     probe_checked: int = 0
     probe_failed: int = 0
+    quarantined: int = 0               # frames stored in <out>/quarantine for human audit (not part of the dataset)
     rejects: dict[str, int] = field(default_factory=dict)
     stage_seconds: dict[str, float] = field(default_factory=dict)
     wall_seconds: float = 0.0
@@ -132,6 +133,10 @@ class DatasetOrchestrator:
         self.quality = quality
         self.feedback = randomizer_feedback(self.randomizer)
         self.rejects: Optional["RejectSink"] = None
+        # quarantine is a small dataset of its own (images/, labels/, annotations/): the same viewers work on it
+        self.qroot = config.out_dir / "quarantine"
+        self.qstore = CanonicalStore(self.qroot)
+        self._q_records: list[FrameRecord] = []
         if quality is not None:
             from ..quality.pipeline import RejectSink
             self.rejects = RejectSink(config.out_dir / "quality", quality.cfg.reject_samples_per_tier,
@@ -148,7 +153,7 @@ class DatasetOrchestrator:
             if self.feedback is not None and fb.exists():
                 self.feedback.load_state(json.loads(fb.read_text()))
             return json.loads(self.manifest_path.read_text())
-        if self.cfg.out_dir.exists() and any(self.cfg.out_dir.iterdir()):
+        if self.cfg.out_dir.exists() and any(p.name != "quality_policy.toml" for p in self.cfg.out_dir.iterdir()):
             raise FileExistsError(f"{self.cfg.out_dir} is not empty; use resume=True or another dir")
         return {"scenes_done": 0, "accepted": 0, "attempts": 0, "rejects": {}}
 
@@ -373,6 +378,7 @@ class DatasetOrchestrator:
     def _finish(self, p: _Pending, rep: SessionReport, records: list[FrameRecord]) -> None:
         """Apply the quality verdict of a frame (in capture order): commit it, or drop it and keep the evidence."""
         from ..quality.pipeline import EvaluatorFailure
+        from ..quality.types import Verdict as QualityVerdictClass
         t = time.perf_counter()
         try:
             outcome = p.future.result()
@@ -382,7 +388,10 @@ class DatasetOrchestrator:
         self._timed("quality_wait", t)
         v, pixels = outcome.verdict, outcome.pixels
         try:
-            if v.tier.is_drop:
+            if v.verdict is QualityVerdictClass.QUARANTINE:
+                self._commit(p.spec, p.snap, p.scene, p.fi, p.kind, p.built, v, p.probe_err, rep, records,
+                             quarantine=True)
+            elif v.tier.is_drop:
                 reason = f"quality_{v.tier.value}"
                 rep.rejects[reason] = rep.rejects.get(reason, 0) + 1
                 assert self.rejects is not None
@@ -398,10 +407,11 @@ class DatasetOrchestrator:
 
     def _commit(self, spec: FrameSpec, snap: FrameSnapshot, scene: SceneSpec, fi: int, kind: FrameKind,
                 built: BuildResult, verdict, probe_err: Optional[float], rep: SessionReport,
-                records: list[FrameRecord]) -> None:
+                records: list[FrameRecord], quarantine: bool = False) -> None:
         t = time.perf_counter()
         rel = Path("images") / scene.split / f"{spec.frame_id}.{self.cfg.image_ext}"
-        self.adapter.capture.commit(snap, self.cfg.out_dir / rel)
+        base = self.qroot if quarantine else self.cfg.out_dir      # file_name is relative to the (sub)dataset root
+        self.adapter.capture.commit(snap, base / rel)
         self._timed("commit_image", t)
         meta: dict[str, Any] = {"seed": spec.seed, "tick": snap.tick, "environment": scene.environment,
                                 "camera": asdict(spec.camera), "warnings": built.warnings,
@@ -415,17 +425,28 @@ class DatasetOrchestrator:
             matches = {m.entity_id: m for m in verdict.metrics.persons}
             for ann in built.annotations:
                 pf, m = feats.get(ann.entity_id), matches.get(ann.entity_id)
+                diff = None
                 if pf is not None:
+                    diff = pf.difficulty
                     ann.meta.update({"occlusion_index": round(pf.occlusion_index, 4),
                                      "contrast_rate": round(pf.contrast_rate, 4),
                                      "perceptibility": round(pf.perceptibility, 4)})
                 if m is not None and verdict.metrics.evaluated:
-                    ann.meta["oks"] = round(m.oks, 4)
+                    ann.meta["oks"] = ann.meta["oks_score"] = round(m.oks, 4)
+                    if diff is not None:
+                        diff = 0.5 * diff + 0.5 * (1.0 - m.oks)      # same blend as the frame-level difficulty
+                if diff is not None:
+                    ann.meta["difficulty_score"] = round(diff, 4)
             rep.quality.setdefault("tiers", {})
             rep.quality["tiers"][verdict.tier.value] = rep.quality["tiers"].get(verdict.tier.value, 0) + 1
-        records.append(FrameRecord(spec.frame_id, scene.scene_index, fi, scene.split, rel.as_posix(),
-                                   snap.camera.width, snap.camera.height, kind, built.annotations, meta))
-        rep.accepted += 1
+        rec = FrameRecord(spec.frame_id, scene.scene_index, fi, scene.split, rel.as_posix(),
+                          snap.camera.width, snap.camera.height, kind, built.annotations, meta)
+        if quarantine:
+            self._q_records.append(rec)
+            rep.quarantined += 1
+        else:
+            records.append(rec)
+            rep.accepted += 1
 
     def _flush_scene(self, scene: SceneSpec, records: list[FrameRecord]) -> None:
         t = time.perf_counter()
@@ -434,6 +455,13 @@ class DatasetOrchestrator:
             if "yolo" in self.cfg.formats:
                 for r in records:
                     write_yolo_label(r, self.cfg.out_dir / "labels")
+        if self._q_records:
+            for split in sorted({r.split for r in self._q_records}):
+                self.qstore.append(split, [r for r in self._q_records if r.split == split])
+            if "yolo" in self.cfg.formats:
+                for r in self._q_records:
+                    write_yolo_label(r, self.qroot / "labels")
+            self._q_records = []
         if self.feedback is not None and hasattr(self.feedback, "save"):
             self.feedback.save(self.cfg.out_dir / "feedback_state.json")
         self._timed("export", t)
@@ -446,6 +474,10 @@ class DatasetOrchestrator:
                 write_coco(self.store.load(s), self.schema, root / "annotations" / f"coco_{s}.json")
         if "yolo" in self.cfg.formats:
             write_yolo_yaml(root, self.schema, splits)
+        qsplits = self.qstore.splits()
+        if "coco" in self.cfg.formats:
+            for s in qsplits:
+                write_coco(self.qstore.load(s), self.schema, self.qroot / "annotations" / f"coco_{s}.json")
         rep.wall_seconds = wall_s
         rep.stage_seconds = {k: round(v, 3) for k, v in self._t.items()}
         if self.quality is not None or self.feedback is not None:
@@ -454,7 +486,8 @@ class DatasetOrchestrator:
             rep.quality = {**rep.quality, **({"pipeline": stats} if stats else {})}
             write_closed_loop_report(root, stats, dict(self.rejects.total) if self.rejects else {},
                                      self.feedback.report() if self.feedback is not None else None,
-                                     (r for s_ in splits for r in self.store.load(s_)))
+                                     (r for s_ in splits for r in self.store.load(s_)),
+                                     [(s_, r) for s_ in qsplits for r in self.qstore.load(s_)])
         (root / "report.json").write_text(json.dumps(asdict(rep), indent=2))
         write_dataset_card(root, self.adapter, self.cfg, rep, self.schema, self.store)
 

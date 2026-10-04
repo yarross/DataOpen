@@ -17,6 +17,15 @@ class Prediction:
     keypoints: Optional[np.ndarray] = None        # (K, 3): x, y, confidence; None for box-only models (D-FINE)
 
 
+class Verdict(str, Enum):
+    """The public four-class verdict written to every dataset record. `Tier` below is the detailed reason code."""
+
+    KEEP_CLEAN = "keep_clean"      # ideal frame: usable, the baseline model handles it
+    KEEP_HARD = "keep_hard"        # visible to a human, the baseline model struggles: the most valuable frames
+    QUARANTINE = "quarantine"      # contradicts itself (model vs labels): stored aside, in full, for human audit
+    REJECT = "reject"              # garbage: never written to the dataset (evidence only)
+
+
 class Tier(str, Enum):
     KEEP = "keep"                          # normal, usable frame
     KEEP_HARD = "keep_hard"                # perceptible but the baseline model struggles: the most valuable frames
@@ -30,7 +39,18 @@ class Tier(str, Enum):
 
     @property
     def is_drop(self) -> bool:
+        """Not part of the training set (rejected OR quarantined)."""
         return self.value.startswith("drop_") or self in (Tier.SUSPECT, Tier.REJECTED)
+
+    @property
+    def verdict(self) -> "Verdict":
+        if self is Tier.KEEP:
+            return Verdict.KEEP_CLEAN
+        if self in (Tier.KEEP_HARD, Tier.HARD_NEGATIVE):
+            return Verdict.KEEP_HARD
+        if self in (Tier.SUSPECT, Tier.DROP_PHANTOM):
+            return Verdict.QUARANTINE
+        return Verdict.REJECT
 
 
 @dataclass
@@ -61,6 +81,11 @@ class QualityMetrics:
     max_disagreement_score: float = 0.0  # highest-confidence prediction that overlaps a GT box but disagrees on keypoints
     persons: list[MatchedPerson] = field(default_factory=list)
 
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "QualityMetrics":
+        kw = {k: v for k, v in d.items() if k in cls.__dataclass_fields__ and k != "persons"}
+        return cls(**kw, persons=[MatchedPerson(**p) for p in d.get("persons", [])])
+
     def to_dict(self) -> dict[str, Any]:
         d = {k: (round(v, 4) if isinstance(v, float) else v) for k, v in self.__dict__.items() if k != "persons"}
         d["persons"] = [{k: round(v, 4) if isinstance(v, float) else v for k, v in p.__dict__.items()} for p in self.persons]
@@ -76,6 +101,8 @@ class PersonFeatures:
     size_px: float = 0.0              # bbox height
     sharpness: float = 0.0            # local Laplacian variance (blur / fog lowers it)
     perceptibility: float = 0.0       # 0..1: can a model reasonably see this person? (contrast x brightness x size)
+    limiting_factor: str = ""         # "contrast" | "brightness" | "size": what limits perceptibility most
+    difficulty: float = 0.0           # 0..1 static difficulty of this person alone (no model)
 
 
 @dataclass
@@ -101,6 +128,13 @@ class FrameFeatures:
     def mean_contrast(self) -> float:
         return float(np.mean([p.contrast_rate for p in self.persons])) if self.persons else 0.0
 
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "FrameFeatures":
+        fields = PersonFeatures.__dataclass_fields__
+        return cls(has_pixels=d.get("has_pixels", False), luma_mean=d.get("luma_mean", 0.0), luma_std=d.get("luma_std", 0.0),
+                   saturated_frac=d.get("saturated_frac", 0.0), gt_issues=list(d.get("gt_issues", [])),
+                   persons=[PersonFeatures(**{k: v for k, v in p.items() if k in fields}) for p in d.get("persons", [])])
+
     def to_dict(self) -> dict[str, Any]:
         return {"has_pixels": self.has_pixels, "luma_mean": round(self.luma_mean, 4), "luma_std": round(self.luma_std, 4),
                 "saturated_frac": round(self.saturated_frac, 4), "gt_issues": self.gt_issues,
@@ -119,9 +153,15 @@ class QualityVerdict:
     utility: float                     # reward for the adaptive randomizer (0 = wasted frame, 1 = ideal edge case)
     metrics: QualityMetrics
     features: FrameFeatures
+    policy_version: int = 0            # which rule set produced this verdict (rules can change mid-run)
+
+    @property
+    def verdict(self) -> Verdict:
+        return self.tier.verdict
 
     def to_dict(self) -> dict[str, Any]:
-        return {"tier": self.tier.value, "reasons": self.reasons, "difficulty": round(self.difficulty, 4),
+        return {"verdict": self.verdict.value, "policy_version": self.policy_version,
+                "tier": self.tier.value, "reasons": self.reasons, "difficulty": round(self.difficulty, 4),
                 "occlusion_index": round(self.occlusion_index, 4), "contrast_rate": round(self.contrast_rate, 4),
                 "weight": round(self.weight, 3), "utility": round(self.utility, 3),
                 "metrics": self.metrics.to_dict(), "features": self.features.to_dict()}

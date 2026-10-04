@@ -10,28 +10,66 @@ from ..core.models import FrameRecord
 
 
 def quality_index(records: Iterable[FrameRecord]) -> dict[str, Any]:
-    """frame_id -> {tier, difficulty, weight, mean_oks, ...} for sampling, curricula and weighted training."""
+    """frame_id -> {verdict, tier, difficulty_score, weight, oks_score, ...} for sampling, curricula, weighted training."""
     out = {}
     for r in records:
         q = r.meta.get("quality")
         if q:
-            out[r.frame_id] = {"tier": q["tier"], "difficulty": q["difficulty"], "weight": q["weight"],
+            oks = q["metrics"]["mean_oks"] if q["metrics"]["evaluated"] else None
+            out[r.frame_id] = {"verdict": q.get("verdict"), "tier": q["tier"], "difficulty_score": q["difficulty"],
+                               "difficulty": q["difficulty"], "weight": q["weight"],
                                "occlusion_index": q["occlusion_index"], "contrast_rate": q["contrast_rate"],
-                               "mean_oks": q["metrics"]["mean_oks"] if q["metrics"]["evaluated"] else None,
-                               "reasons": q["reasons"]}
+                               "oks_score": oks, "mean_oks": oks, "reasons": q["reasons"]}
     return out
 
 
+FRAME_COLUMNS = ["frame_id", "set", "split", "verdict", "tier", "difficulty_score", "contrast_rate", "occlusion_index",
+                 "oks_score", "weight", "policy_version", "n_persons", "reasons"]
+PERSON_COLUMNS = ["frame_id", "set", "entity_id", "difficulty_score", "contrast_rate", "occlusion_index", "oks_score",
+                  "perceptibility"]
+
+
+def write_quality_csv(root: Path, kept: Iterable[FrameRecord],
+                      quarantined: Iterable[tuple[str, FrameRecord]] = ()) -> None:
+    """quality_index.csv / quality_persons.csv: the per-frame and per-person quality metadata, joinable by frame_id.
+    YOLO-Pose .txt files must stay strictly standard (extra columns break loaders), so the metadata lives here."""
+    import csv
+    root = Path(root)
+    rows = [("dataset", r) for r in kept] + [("quarantine", r) for _, r in quarantined]
+    with (root / "quality_index.csv").open("w", newline="", encoding="utf-8") as f, \
+            (root / "quality_persons.csv").open("w", newline="", encoding="utf-8") as g:
+        fw, gw = csv.writer(f), csv.writer(g)
+        fw.writerow(FRAME_COLUMNS)
+        gw.writerow(PERSON_COLUMNS)
+        for which, r in rows:
+            q = r.meta.get("quality")
+            if not q:
+                continue
+            evaluated = q["metrics"]["evaluated"]
+            fw.writerow([r.frame_id, which, r.split, q.get("verdict", ""), q["tier"], q["difficulty"], q["contrast_rate"],
+                         q["occlusion_index"], q["metrics"]["mean_oks"] if evaluated else "", q["weight"],
+                         q.get("policy_version", 0), len(r.annotations), ";".join(q["reasons"])])
+            for a in r.annotations:
+                m = a.meta
+                gw.writerow([r.frame_id, which, a.entity_id, m.get("difficulty_score", ""), m.get("contrast_rate", ""),
+                             m.get("occlusion_index", ""), m.get("oks_score", ""), m.get("perceptibility", "")])
+
+
 def write_closed_loop_report(root: Path, pipeline_stats: Optional[dict[str, Any]], reject_totals: dict[str, int],
-                             feedback_report: Optional[dict[str, Any]], records: Iterable[FrameRecord]) -> None:
+                             feedback_report: Optional[dict[str, Any]], records: Iterable[FrameRecord],
+                             quarantined: Iterable[tuple[str, FrameRecord]] = ()) -> None:
     root = Path(root)
     records = list(records)
+    quarantined = list(quarantined)
     idx = quality_index(records)
     if idx:
         (root / "quality_index.json").write_text(json.dumps(idx))
+        write_quality_csv(root, records, quarantined)
     kept = Counter(v["tier"] for v in idx.values())
-    data = {"pipeline": pipeline_stats, "kept_by_tier": dict(kept), "dropped_by_tier": dict(reject_totals),
-            "feedback": feedback_report}
+    verdicts = Counter(v["verdict"] for v in idx.values())
+    verdicts["quarantine"] += len(quarantined)
+    data = {"pipeline": pipeline_stats, "kept_by_tier": dict(kept), "kept_by_verdict": dict(verdicts),
+            "quarantined": len(quarantined), "dropped_by_tier": dict(reject_totals), "feedback": feedback_report}
     (root / "closed_loop_report.json").write_text(json.dumps(data, indent=2))
 
     lines = ["# Closed-loop validation report", ""]
@@ -42,7 +80,8 @@ def write_closed_loop_report(root: Path, pipeline_stats: Optional[dict[str, Any]
                   f"mean inference: {pipeline_stats['mean_inference_ms']} ms; evaluator errors: {pipeline_stats['evaluator_errors']}",
                   f"- kept: {dict(kept)}", f"- dropped: {dict(reject_totals)}", ""]
     lines += ["How to read it: `keep_hard` frames are visible people the baseline model struggles on (the most valuable "
-              "ones, weight > 1 in `quality_index.json`). Dropped tiers never enter the dataset; `quality/rejects/` and "
+              "ones, weight > 1 in `quality_index.csv`). `quarantine/` holds frames whose labels and the model contradict "
+              "each other, in full, for human review. Rejected frames never enter the dataset; `quality/rejects/` and "
               "`quality/audit/` hold examples. Audit a few: if many dropped frames look usable, loosen the thresholds. "
               "Dropping only on evidence independent of the model (broken skeleton, broken picture, imperceptible person, "
               "an unlabeled person) is what keeps the dataset from being biased toward what the model already knows.", ""]

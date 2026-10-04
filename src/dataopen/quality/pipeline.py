@@ -10,6 +10,7 @@ keeps a bounded number of frames in flight (back-pressure by shared-memory slots
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 from collections import Counter, defaultdict
@@ -30,6 +31,13 @@ from .metrics import DefaultMetricCalculator
 from .policy import DefaultQualityPolicy, PolicyConfig
 from .types import QualityMetrics, QualityVerdict
 
+try:
+    import tomllib
+except ModuleNotFoundError:          # Python 3.10
+    import tomli as tomllib          # type: ignore[no-redef]
+
+log = logging.getLogger("dataopen")
+
 
 class EvaluatorFailure(RuntimeError):
     """The baseline model failed repeatedly: continuing would silently ship unvalidated frames."""
@@ -47,6 +55,8 @@ class QualityConfig:
     phantom_conf: float = 0.6
     audit_fraction: float = 0.02      # share of DROPPED frames saved to audit/ to measure the false-rejection rate
     reject_samples_per_tier: int = 25  # dropped frames saved per tier for human review
+    policy_file: Optional[str] = None  # TOML with new thresholds; re-read while running (mtime), applied between frames
+    policy_check_every: int = 20       # submissions between checks of that file
     policy: PolicyConfig = field(default_factory=PolicyConfig)
     features: FeatureConfig = field(default_factory=FeatureConfig)
 
@@ -85,6 +95,9 @@ class QualityPipeline:
         self.errors = 0
         self._consecutive_errors = 0
         self.max_consecutive_errors = 3
+        self._submitted = 0
+        self._policy_mtime: Optional[float] = None
+        self.policy_changes: list[dict[str, Any]] = []      # [{at_submission, version, spec | error}]
         if evaluator is not None:
             evaluator.warmup()
 
@@ -130,13 +143,39 @@ class QualityPipeline:
         return QualityOutcome(verdict, item.pixels)
 
     def submit(self, item: QualityItem) -> "Future[QualityOutcome]":
+        self._submitted += 1
+        if self.cfg.policy_file and self._submitted % max(1, self.cfg.policy_check_every) == 1:
+            self.reload_policy()
         return self.pool.submit(self.evaluate, item)
+
+    def reload_policy(self) -> bool:
+        """Apply the policy file if it changed. A broken file keeps the old rules and is reported, never half-applied."""
+        path = Path(self.cfg.policy_file or "")
+        try:
+            mtime = path.stat().st_mtime_ns
+        except OSError:
+            return False
+        if mtime == self._policy_mtime:
+            return False
+        self._policy_mtime = mtime
+        try:
+            data = tomllib.loads(path.read_text(encoding="utf-8"))
+            spec = data.get("policy", data)
+            self.policy.reconfigure(spec)
+        except Exception as e:          # TOML error, unknown key, wrong type, policy without reconfigure()
+            log.warning("quality policy file %s ignored, keeping the current rules: %s", path, e)
+            self.policy_changes.append({"at_submission": self._submitted, "version": self.policy.version, "error": str(e)})
+            return False
+        log.info("quality policy reloaded from %s (version %d)", path, self.policy.version)
+        self.policy_changes.append({"at_submission": self._submitted, "version": self.policy.version, "spec": spec})
+        return True
 
     def stats(self) -> dict[str, Any]:
         n = sum(self.tier_counts.values())
         return {"frames": n, "tiers": dict(self.tier_counts), "evaluated_by_model": self.evaluated,
                 "dropped_by_cheap_gates": self.gated, "frames_without_pixels": self.no_pixels,
-                "evaluator_errors": self.errors,
+                "evaluator_errors": self.errors, "policy_version": self.policy.version,
+                "policy_changes": self.policy_changes,
                 "mean_inference_ms": round(self.latency_ms_sum / self.evaluated, 2) if self.evaluated else None,
                 "backend": self.evaluator.name if self.evaluator else None}
 

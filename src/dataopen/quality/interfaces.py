@@ -43,8 +43,16 @@ class IQualityMetricCalculator(ABC):
 
 
 class IQualityPolicy(ABC):
+    """Rules: metrics + model-independent features -> verdict. Pure (no I/O), so it can be re-run on stored records."""
+
+    version: int = 0                   # bumped by every reconfigure(); stamped on each verdict
+
     @abstractmethod
     def decide(self, metrics: QualityMetrics, features: Any, is_negative: bool) -> QualityVerdict: ...
+
+    def reconfigure(self, spec: dict) -> None:
+        """Swap thresholds between frames (hot reload). Policies without tunable rules may ignore it."""
+        raise NotImplementedError(f"{type(self).__name__} does not support reconfigure()")
 
 
 class IFeedbackController(ABC):

@@ -19,7 +19,7 @@ from __future__ import annotations
 import itertools
 import json
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
@@ -27,6 +27,7 @@ import numpy as np
 
 from ..core.models import FrameSpec, SceneSpec
 from ..core.randomization import Categorical, Constant, DomainRandomizationController, Param
+from .balance import BalanceConfig, BalanceController, drift_stats
 from .interfaces import IFeedbackController
 from .types import QualityVerdict, Tier
 
@@ -46,6 +47,7 @@ class FeedbackConfig:
     exploit_sigma: float = 0.07
     memory: int = 300
     hard_utility: float = 0.8         # utility at/above which a frame is remembered as an edge case
+    balance: BalanceConfig = field(default_factory=BalanceConfig)   # dataset-level controller (quality/balance.py)
 
 
 class UnitWarp:
@@ -108,6 +110,7 @@ class AdaptiveRandomizer(DomainRandomizationController, IFeedbackController):
         self.n_observed = 0
         self.last_update = 0
         self._pairs: set[tuple] = set()
+        self.balance = BalanceController(self.fb.balance)
         spaces = {"env": self.env_space, "actor": self.actor_space, "cam": self.camera_space,
                   "frame": self.actor_frame_space}
         self._spaces = spaces
@@ -137,9 +140,11 @@ class AdaptiveRandomizer(DomainRandomizationController, IFeedbackController):
     def _units(self, group: str, names: list[str], units: np.ndarray, rng: np.random.Generator) -> np.ndarray:
         if not self.adapting or not names:
             return units
+        if self.balance.cfg.enabled and rng.random() < self.balance.uniform_mix:
+            return units                    # anchor draw: the untouched stratified sample of the full prior
         out = np.array(units, dtype=np.float64)
         # edge-case mining: reuse a remembered hard example's draws for this group, jittered
-        if self._memory and rng.random() < self.fb.exploit_p:
+        if self._memory and rng.random() < self.balance.exploit_p(self.fb.exploit_p):
             mem = self._memory[int(rng.integers(0, len(self._memory)))]
             src = self._memory_units(mem, group, rng)
             if src is not None and len(src) == len(names):
@@ -184,7 +189,9 @@ class AdaptiveRandomizer(DomainRandomizationController, IFeedbackController):
         if verdict.utility >= self.fb.hard_utility and (scene.units or frame.units):
             self._memory.append({"scene": scene.units, "frame": frame.units, "utility": verdict.utility})
         self.n_observed += 1
+        self.balance.observe(verdict)
         if self.adapting and self.n_observed - self.last_update >= self.fb.update_every:
+            self.balance.update()
             self._update_tilts()
             self.last_update = self.n_observed
 
@@ -210,7 +217,10 @@ class AdaptiveRandomizer(DomainRandomizationController, IFeedbackController):
                 continue
             mu_b = (st.util + c.shrink_k * mu_g) / (st.n + c.shrink_k)
             ucb = c.ucb_c * np.sqrt(np.log(total_n + 1.0) / (st.n + 1.0))
-            target = np.clip((mu_b / mu_g) ** c.gamma + ucb, c.floor, c.cap)
+            ratio = (mu_b / mu_g) ** (c.gamma * self.balance.gamma_scale if c.balance.enabled else c.gamma)
+            if self.balance.drop_pressure > 0:          # over the reject budget: starve bins that keep producing garbage
+                ratio = ratio * (1.0 - st.drop / (st.n + 2.0)) ** self.balance.drop_pressure
+            target = np.clip(ratio + ucb, c.floor, c.cap)
             w = self._warps[key]
             w.set_tilt(c.smooth * w.t + (1.0 - c.smooth) * target)
 
@@ -220,7 +230,7 @@ class AdaptiveRandomizer(DomainRandomizationController, IFeedbackController):
                 "tilts": {k: w.t.tolist() for k, w in self._warps.items()},
                 "stats": {k: {f: getattr(s, f).tolist() for f in ("n", "util", "hard", "drop", "oks", "oks_n")}
                           for k, s in self._stats.items()},
-                "memory": list(self._memory), "pairs": [list(p) for p in self._pairs]}
+                "memory": list(self._memory), "pairs": [list(p) for p in self._pairs], "balance": self.balance.state()}
 
     def load_state(self, state: dict[str, Any]) -> None:
         if state.get("version") != 1:
@@ -235,6 +245,8 @@ class AdaptiveRandomizer(DomainRandomizationController, IFeedbackController):
                     setattr(self._stats[k], f, np.asarray(v, dtype=float))
         self._memory.extend(state.get("memory", []))
         self._pairs = {tuple(p) for p in state.get("pairs", [])}
+        if "balance" in state:
+            self.balance.load_state(state["balance"])
 
     def save(self, path: Path) -> None:
         tmp = Path(str(path) + ".tmp")
@@ -269,5 +281,23 @@ class AdaptiveRandomizer(DomainRandomizationController, IFeedbackController):
                            for a, b in itertools.combinations(self._cat_keys, 2))
             pair_cov = {"keys": self._cat_keys, "pairs_seen": len(self._pairs), "pairs_possible": possible,
                         "coverage": round(len(self._pairs) / possible, 3) if possible else None}
+        drift, warnings = self._drift()
         return {"observed_frames": self.n_observed, "adapting": self.adapting, "remembered_hard_examples": len(self._memory),
-                "parameters": params, "pairwise_appearance_coverage": pair_cov}
+                "parameters": params, "pairwise_appearance_coverage": pair_cov, "balance": self.balance.report(),
+                "drift": drift, "drift_warnings": warnings}
+
+    def _drift(self) -> tuple[dict[str, Any], list[str]]:
+        """How far the realized distribution of each parameter moved from its prior; warnings for collapse."""
+        bc = self.fb.balance
+        drift: dict[str, Any] = {}
+        warnings: list[str] = []
+        for key, st in self._stats.items():
+            if st.n.sum() < 10 * len(st.n):          # too few draws for a meaningful frequency estimate
+                continue
+            d = drift_stats(st.n, self._warps[key].m)
+            drift[key] = d
+            if d["kl"] > bc.kl_warn:
+                warnings.append(f"{key}: realized distribution drifted from the prior (KL={d['kl']})")
+            if d["min_share_ratio"] < bc.min_share_warn:
+                warnings.append(f"{key}: a bin is starved ({d['min_share_ratio']} of its prior mass): coverage is collapsing")
+        return drift, warnings

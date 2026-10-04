@@ -45,14 +45,16 @@ def coco_dict(records: Iterable[FrameRecord], schema: SkeletonSchema) -> dict:
                  "is_negative": r.kind.value == "negative"}
         q = r.meta.get("quality")
         if q:  # frame difficulty metadata (COCO allows extra fields; ignored by standard loaders)
-            image.update({"tier": q["tier"], "difficulty": q["difficulty"], "weight": q["weight"],
+            image.update({"verdict": q.get("verdict"), "tier": q["tier"], "difficulty_score": q["difficulty"],
+                          "difficulty": q["difficulty"], "weight": q["weight"],
                           "occlusion_index": q["occlusion_index"], "contrast_rate": q["contrast_rate"]})
             if q["metrics"]["evaluated"]:
-                image["mean_oks"] = q["metrics"]["mean_oks"]
+                image["oks_score"] = image["mean_oks"] = q["metrics"]["mean_oks"]
         images.append(image)
         for a in r.annotations:
             kp = a.keypoints
-            extra = {k: a.meta[k] for k in ("oks", "occlusion_index", "contrast_rate", "perceptibility") if k in a.meta}
+            extra = {k: a.meta[k] for k in ("oks_score", "oks", "difficulty_score", "occlusion_index", "contrast_rate",
+                                                  "perceptibility") if k in a.meta}
             anns.append({
                 **extra,
                 "id": ann_id, "image_id": img_id, "category_id": 1, "iscrowd": 0,

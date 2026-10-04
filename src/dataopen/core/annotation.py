@@ -26,7 +26,7 @@ class Verdict(str, Enum):
 @dataclass
 class AnnotationConfig:
     bbox_padding: float = 0.08           # fraction of bbox size, used when no hull points
-    min_bbox_height_px: float = 24.0     # smaller (but not negligible) visible persons reject the frame
+    min_bbox_height_px: float = 20.0     # smaller (but not negligible) visible persons reject the frame
     min_bbox_width_px: float = 8.0
     negligible_height_px: float = 12.0   # visible persons shorter than this are simply not annotated
     min_visible_keypoints: int = 4       # joints with v == 2

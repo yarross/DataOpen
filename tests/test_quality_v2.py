@@ -87,8 +87,8 @@ def test_metadata_columns_in_coco_csv_and_index(tmp_path):
     idx = json.loads((out / "quality_index.json").read_text())
     assert all(v["verdict"] in ("keep_clean", "keep_hard") and "oks_score" in v for v in idx.values())
     # YOLO labels stay strictly standard: 5 + 3*K columns, nothing appended
-    first = next(out.glob("labels/*/*.txt")).read_text().splitlines()
-    assert first and all(len(line.split()) == 5 + 3 * 13 for line in first)
+    lines = [ln for f in sorted(out.glob("labels/*/*.txt")) for ln in f.read_text().splitlines()]   # negatives are empty files
+    assert lines and all(len(ln.split()) == 5 + 3 * 13 for ln in lines)
 
 
 def test_policy_hot_reload_changes_the_rules_mid_run_and_a_broken_file_is_ignored(tmp_path):

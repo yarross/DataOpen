@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <!-- Build:  dotnet build -c Release -p:GameDir="<path to the game folder>" -p:ManagedDir="<GameDir>/<name>_Data/Managed"
-       or simply: dataopen install --game valheim --dir "<path to the game folder>" -->
+       or simply: run `dataopen install` for this game and point it at your game folder -->
   <PropertyGroup>
     <TargetFramework>net46</TargetFramework>
     <LangVersion>7.3</LangVersion>

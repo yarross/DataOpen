@@ -62,3 +62,17 @@ def test_stays_within_csharp_73(path):
 def test_the_checker_actually_detects_errors():
     assert error_lines(b"class A { void M() { int x = ; } ") != []
     assert error_lines(b"class A { void M() { int x = 1; } }") == []
+
+
+def test_msbuild_and_nuget_files_are_well_formed_xml():
+    """A `--` inside an XML comment made both plugin projects unloadable (MSB4025) and the C# CI never reached the
+    compiler. XML well-formedness needs no .NET, so check it here."""
+    import xml.etree.ElementTree as ET
+    root = Path(__file__).resolve().parents[1] / "adapters" / "unity"
+    files = sorted([*root.glob("**/*.csproj"), *root.glob("**/*.props"), *root.glob("**/NuGet.config")])
+    assert any(f.suffix == ".csproj" for f in files)
+    for f in files:
+        try:
+            ET.parse(f)
+        except ET.ParseError as e:
+            raise AssertionError(f"{f.relative_to(root)} is not well-formed XML: {e}") from e

@@ -188,7 +188,8 @@ class _Bridge(ICaptureBridge):
             raise AdapterError("no actors spawned")
         w.tick += 1  # real adapters: step N fixed ticks, wait for end-of-frame
         cam = self._camera(spec.camera, req)
-        entities = self.ext.extract([EntityHandle(i, a["rig"]) for i, a in w.actors.items()]) if w.active else []
+        entities = self.ext.extract([EntityHandle(i, a["rig"], {"outfit": a.get("outfit", "casual")})
+                                     for i, a in w.actors.items()]) if w.active else []
         # NOTE: handles above lose appearance meta; fine for the mock.
 
         rng = np.random.default_rng(derive_seed(spec.seed, "mock-wall"))
@@ -197,12 +198,12 @@ class _Bridge(ICaptureBridge):
             dist = spec.camera.distance * rng.uniform(0.4, 0.8)
             wall = (dist, rng.uniform(-0.6, 0.6), rng.uniform(0.0, 0.8), rng.uniform(0.3, 0.9), rng.uniform(0.3, 0.9))
         depth = self._depth(cam, wall)
-        img = self._render(cam, entities, wall, depth)
+        img, colors = self._render(cam, entities, wall, depth)
         self._pending[req.frame_id] = img
         gray = img.mean(axis=2)
         thumb = gray[: gray.shape[0] // 8 * 8, : gray.shape[1] // 9 * 9]
         thumb = thumb.reshape(8, thumb.shape[0] // 8, 9, thumb.shape[1] // 9).mean(axis=(1, 3))
-        return FrameSnapshot(req.frame_id, w.tick, cam, entities, depth, thumb, meta={"wall": wall})
+        return FrameSnapshot(req.frame_id, w.tick, cam, entities, depth, thumb, meta={"wall": wall, "colors": colors})
 
     def _depth(self, cam: CameraModel, wall) -> np.ndarray:
         h, wd = cam.height // 2, cam.width // 2  # depth rendered at half resolution
@@ -217,34 +218,54 @@ class _Bridge(ICaptureBridge):
             d[inside] = dist
         return d
 
-    def _render(self, cam: CameraModel, ents, wall, depth) -> np.ndarray:
+    # outfit -> base colour. Physically plausible on purpose: lighting and fog act on persons exactly as on the background,
+    # so night makes people dark and fog makes them blend into the haze (this is what the closed loop has to detect).
+    OUTFITS = {"casual": (200, 60, 60), "uniform": (60, 70, 200), "armor": (115, 115, 120)}
+
+    def _render(self, cam: CameraModel, ents, wall, depth):
+        from ...core.projection import project
+        from ...core.viz import _line
         env = self.w.env
         tod = env.get("time_of_day", 12.0)
         light = float(np.clip(np.sin(np.pi * (tod - 6) / 12), 0.12, 1.0)) * 2 ** env.get("exposure_ev", 0)
         fog = 1 - np.exp(-40 * env.get("fog_density", 0.0))
         H, W = cam.height, cam.width
+
+        def lit(c):
+            return np.clip(np.asarray(c, dtype=float) * min(light, 1.2) * (1 - fog) + 190 * fog * min(light, 1.0), 0, 255)
+
         sky = np.linspace([120, 160, 220], [180, 200, 230], H // 2)
         ground = np.linspace([70, 90, 60], [40, 60, 40], H - H // 2)
-        img = np.concatenate([sky, ground])[:, None, :].repeat(W, axis=1)
-        img = img * min(light, 1.2) * (1 - fog) + 190 * fog * min(light, 1.0)
-        img = np.clip(img, 0, 255).astype(np.uint8)
-        from ...core.projection import project
+        img = np.clip(lit(np.concatenate([sky, ground])[:, None, :].repeat(W, axis=1)), 0, 255).astype(np.uint8)
+        colors = {}
+        schema = self.ext.schema
         for e in ents:
             uv, z = project(e.skeleton_world, cam)
-            col = np.array([200, 60, 60], dtype=np.uint8)
-            for (u, v), zz in zip(uv, z):
-                if zz > cam.near and 2 <= u < W - 2 and 2 <= v < H - 2:
+            col = tuple(int(v) for v in lit(self.OUTFITS.get(e.meta.get("outfit", "casual"), self.OUTFITS["casual"])))
+            colors[e.entity_id] = col
+            ok = (z > cam.near) & (uv[:, 0] >= 2) & (uv[:, 0] < W - 2) & (uv[:, 1] >= 2) & (uv[:, 1] < H - 2)
+            for a, b in schema.edges:
+                ia, ib = schema.index(a), schema.index(b)
+                if ok[ia] and ok[ib]:
+                    _line(img, uv[ia], uv[ib], col, 3)
+            for (u, v), good in zip(uv, ok):
+                if good:
                     img[int(v) - 2:int(v) + 3, int(u) - 2:int(u) + 3] = col
         if wall is not None:
             big = np.repeat(np.repeat(np.isfinite(depth), 2, axis=0), 2, axis=1)[:H, :W]
             img[big] = (60, 60, 70)
-        return img
+        return img, colors
 
     def commit(self, snapshot: FrameSnapshot, dest: Path) -> None:
         write_image(dest, self._pending.pop(snapshot.frame_token))
 
     def discard(self, snapshot: FrameSnapshot) -> None:
         self._pending.pop(snapshot.frame_token, None)
+
+    def peek_pixels(self, snapshot: FrameSnapshot, max_side=None):
+        from ...quality.interfaces import PixelHandle
+        img = self._pending.get(snapshot.frame_token)
+        return PixelHandle(img) if img is not None else None
 
 
 class MockGameAdapter(IGameAdapter):

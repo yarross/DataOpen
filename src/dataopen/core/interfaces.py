@@ -9,7 +9,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Sequence
+from typing import Optional, Sequence
 
 from .models import (CaptureRequest, EntityHandle, EntityState, FrameSnapshot, SceneSpec, FrameSpec)
 from .randomization import AdapterParameterSpace
@@ -93,6 +93,11 @@ class ICaptureBridge(ABC):
     @abstractmethod
     def discard(self, snapshot: FrameSnapshot) -> None:
         """Release the pixels of a REJECTED frame (no encode, no disk I/O)."""
+
+    def peek_pixels(self, snapshot: FrameSnapshot, max_side: Optional[int] = None):
+        """Optional: the frame's pixels in core memory WITHOUT committing it (for in-the-loop validation).
+        Returns a `quality.interfaces.PixelHandle` (call .release() when done) or None if unsupported."""
+        return None
 
 
 class IGameAdapter(ABC):

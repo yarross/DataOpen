@@ -3,6 +3,7 @@
   dataopen games                                   list game profiles
   dataopen doctor  --game gmod [--mailbox DIR]     check a game integration before collecting
   dataopen collect --game gmod --out DIR --frames N
+  dataopen eval-image --model M.onnx --image I.png   check an ONNX model + keypoint mapping on one image
   dataopen verify  DIR                             check a collected dataset, write qa_report.{json,md}
   dataopen preview DIR                             contact sheet with labels drawn on top
   dataopen merge   OUT SRC1 SRC2 ...               merge shards
@@ -30,6 +31,7 @@ from .core.orchestrator import CalibrationError, DatasetOrchestrator, SessionAbo
 from .core.preview import make_preview
 from .core.qa import verify_dataset, write_reports
 from .factory import build_adapter
+from .quality.factory import QualityConfigError, build_quality, build_randomizer
 from .profiles import ProfileError, list_profiles, load_profile
 
 EXIT_OK, EXIT_FAILED_CHECK, EXIT_INCOMPLETE, EXIT_ABORTED, EXIT_USAGE = 0, 1, 2, 3, 4
@@ -54,6 +56,56 @@ def _cmd_doctor(a) -> int:
     print(rep.render())
     print(f"\nOverlays and doctor_report.json: {Path(a.out) / 'doctor'}")
     return EXIT_OK if rep.ok else EXIT_FAILED_CHECK
+
+
+def _quality_spec(profile_quality: dict, a) -> dict:
+    """Profile [quality] table overridden by CLI flags."""
+    spec = {**profile_quality}
+    if a.quality_model:
+        spec.update(enabled=True, evaluator="onnx", model=a.quality_model)
+    if a.quality_format:
+        spec["format"] = a.quality_format
+    if a.quality_device:
+        spec["device"] = a.quality_device
+    if a.quality_sim:
+        spec.update(enabled=True, evaluator="simulated")
+    if a.quality_static:
+        spec.update(enabled=True, evaluator="none")
+    if a.quality_inflight is not None:
+        spec["max_inflight"] = a.quality_inflight
+    if a.quality_every is not None:
+        spec["sample_every"] = a.quality_every
+    return spec
+
+
+def _cmd_eval_image(a) -> int:
+    """Run the configured evaluator on ONE image and draw what it sees: validates a model + keypoint mapping."""
+    import numpy as np
+    from .core.imageio import read_image, write_png
+    from .core.models import Annotation
+    from .core.schema import HUMAN_13
+    from .core.viz import draw_annotations
+    from .quality.factory import build_evaluator
+    spec = {"evaluator": "onnx", "model": a.model, "format": a.format, "device": a.device,
+            "keypoint_map": a.keypoint_map, "conf_thr": a.conf}
+    ev = build_evaluator(spec, HUMAN_13)
+    img = read_image(Path(a.image))
+    preds = ev.predict([img])[0]
+    print(f"{ev.name}: {len(preds)} detections on {img.shape[1]}x{img.shape[0]}")
+    anns = []
+    for i, p in enumerate(preds):
+        print(f"  #{i} score={p.score:.2f} bbox={tuple(round(v) for v in p.bbox)} "
+              f"keypoints={'yes' if p.keypoints is not None else 'no (box-only model)'}")
+        if p.keypoints is not None:
+            kp = p.keypoints.copy()
+            kp[:, 2] = np.where(kp[:, 2] > 0.3, 2, 0)
+            anns.append(Annotation(i, kp, p.bbox))
+        else:
+            anns.append(Annotation(i, np.zeros((13, 3)), p.bbox))
+    out = Path(a.out or "eval_overlay.png")
+    write_png(out, draw_annotations(img, anns, HUMAN_13))
+    print(f"overlay: {out}")
+    return EXIT_OK
 
 
 def _cmd_collect(a) -> int:
@@ -84,7 +136,14 @@ def _cmd_collect(a) -> int:
                         shard_count=shard_n, image_ext=a.image_ext,
                         provenance=dict(prof.provenance) | ({"note": a.provenance_note} if a.provenance_note else {}),
                         **{k: v for k, v in s.items() if k not in {"provenance"}})
-    orch = DatasetOrchestrator(adapter, cfg)
+    quality_spec = _quality_spec(prof.quality, a)
+    try:
+        quality = build_quality(quality_spec, adapter.info.schema)
+        randomizer = build_randomizer(adapter, a.seed, a.adaptive, quality_spec.get("feedback"))
+    except (QualityConfigError, ImportError, OSError, RuntimeError) as e:
+        print(f"cannot start the quality subsystem: {e}")
+        return EXIT_USAGE
+    orch = DatasetOrchestrator(adapter, cfg, randomizer=randomizer, quality=quality)
     if threading.current_thread() is threading.main_thread():
         signal.signal(signal.SIGINT, lambda *_: (print("\nstopping after the current frame..."), orch.request_stop()))
     try:
@@ -190,6 +249,15 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--image-ext", default="png", choices=["png", "jpg"])
     c.add_argument("--provenance-note", help="origin/licence of the assets, stored in DATASET_CARD.json")
     c.add_argument("--no-doctor", action="store_true", help="skip the pre-flight integration check")
+    q = c.add_argument_group("closed-loop quality validation (docs/QUALITY.md)")
+    q.add_argument("--quality-model", help="ONNX model (YOLOv8-pose or D-FINE): validate every frame in memory")
+    q.add_argument("--quality-format", choices=["yolov8_pose", "dfine"])
+    q.add_argument("--quality-device", choices=["cpu", "cuda", "tensorrt", "directml"])
+    q.add_argument("--quality-sim", action="store_true", help="simulated detector (test double; peeks at the labels)")
+    q.add_argument("--quality-static", action="store_true", help="cheap gates only: no model")
+    q.add_argument("--quality-inflight", type=int, help="frames validated while the engine renders the next ones")
+    q.add_argument("--quality-every", type=int, help="run the model on every N-th frame")
+    q.add_argument("--adaptive", action="store_true", help="feedback-driven domain randomization")
     c.set_defaults(fn=_cmd_collect)
 
     v = sub.add_parser("verify", help="verify a dataset and write qa_report")
@@ -208,6 +276,16 @@ def build_parser() -> argparse.ArgumentParser:
     m.add_argument("out")
     m.add_argument("sources", nargs="+")
     m.set_defaults(fn=_cmd_merge)
+
+    e = sub.add_parser("eval-image", help="run a model on one image and draw its detections (checks model + mapping)")
+    e.add_argument("--model", required=True)
+    e.add_argument("--image", required=True)
+    e.add_argument("--format", default="yolov8_pose", choices=["yolov8_pose", "dfine"])
+    e.add_argument("--device", default="cpu")
+    e.add_argument("--keypoint-map", default="coco17", choices=["coco17", "identity"])
+    e.add_argument("--conf", type=float, default=0.25)
+    e.add_argument("--out")
+    e.set_defaults(fn=_cmd_eval_image)
 
     i = sub.add_parser("install", help="install the in-game mod")
     i.add_argument("--game", required=True, choices=["gmod", "valheim", "rust"])

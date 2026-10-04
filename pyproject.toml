@@ -10,8 +10,9 @@ requires-python = ">=3.10"
 dependencies = ["numpy>=1.24", "tomli>=2; python_version < '3.11'"]
 
 [project.optional-dependencies]
-dev = ["pytest>=7", "lupa>=2", "ruff"]
+dev = ["pytest>=7", "lupa>=2", "ruff", "onnx", "onnxruntime>=1.17"]
 capture = ["mss>=9", "pillow>=10"]
+quality = ["onnxruntime>=1.17"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -27,10 +28,10 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 
 [tool.ruff]
-line-length = 130
+line-length = 140
 target-version = "py310"
 extend-exclude = ["adapters"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "B"]
-ignore = ["E741", "B905", "B008"]
+ignore = ["E741", "B905", "B008", "B027"]

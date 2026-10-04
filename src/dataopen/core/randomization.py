@@ -194,6 +194,11 @@ class DomainRandomizationController(IDomainRandomizer):
             self._block_cache = (block, latin_hypercube(self.lhs_block, len(self.env_space.params), rng))
         return self._block_cache[1][pos]
 
+    def _units(self, group: str, names: list[str], units: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+        """Hook: transform the unit-interval draws of one parameter group before they become values. Identity here;
+        the adaptive randomizer warps them toward informative regions (see quality/feedback.py)."""
+        return units
+
     def split_for_scene(self, scene_index: int) -> str:
         # Split by SCENE, never by frame: frames of one scene are near-duplicates.
         u = (derive_seed(self.seed, "split", scene_index) % 10_000) / 10_000
@@ -201,19 +206,35 @@ class DomainRandomizationController(IDomainRandomizer):
 
     def sample_scene(self, scene_index: int) -> SceneSpec:
         rng = np.random.default_rng(derive_seed(self.seed, "scene", scene_index))
-        env = self.env_space.sample(rng, self._env_units(scene_index))
+        env_names = self.env_space.names()
+        u_env = self._units("env", env_names, np.array(self._env_units(scene_index)), rng)
+        env = self.env_space.sample(rng, u_env)
         for rule in self.rules:
             env = rule(env, rng)
         lo, hi = self.actors_per_scene
         n = int(rng.integers(lo, hi + 1))
-        actors = [self.actor_space.sample(rng) for _ in range(n)]
+        actor_names = self.actor_space.names()
+        u_actors, actors = [], []
+        for _ in range(n):
+            ua = self._units("actor", actor_names, rng.random(len(actor_names)), rng)
+            u_actors.append(ua)
+            actors.append(self.actor_space.sample(rng, ua))
         return SceneSpec(scene_index, derive_seed(self.seed, "scene", scene_index),
-                         self.split_for_scene(scene_index), env, actors, self.area)
+                         self.split_for_scene(scene_index), env, actors, self.area,
+                         {"env": [float(x) for x in u_env], "actors": [[float(x) for x in u] for u in u_actors]})
 
     def sample_frame(self, scene: SceneSpec, frame_index: int, kind: FrameKind) -> FrameSpec:
         seed = derive_seed(self.seed, "frame", scene.scene_index, frame_index)
         rng = np.random.default_rng(seed)
-        cam = CameraSpec(**self.camera_space.sample(rng))
+        cam_names = self.camera_space.names()
+        u_cam = self._units("cam", cam_names, rng.random(len(cam_names)), rng)
+        cam = CameraSpec(**self.camera_space.sample(rng, u_cam))
         cam.target_index = int(rng.integers(0, max(1, len(scene.actors))))
-        actor_frame = [self.actor_frame_space.sample(rng) for _ in scene.actors]
-        return FrameSpec(scene.scene_index, frame_index, seed, kind, cam, actor_frame)
+        frame_names = self.actor_frame_space.names()
+        u_frame, actor_frame = [], []
+        for _ in scene.actors:
+            uf = self._units("frame", frame_names, rng.random(len(frame_names)), rng)
+            u_frame.append(uf)
+            actor_frame.append(self.actor_frame_space.sample(rng, uf))
+        return FrameSpec(scene.scene_index, frame_index, seed, kind, cam, actor_frame,
+                         {"cam": [float(x) for x in u_cam], "frame": [[float(x) for x in u] for u in u_frame]})

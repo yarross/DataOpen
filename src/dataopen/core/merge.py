@@ -58,7 +58,7 @@ def merge_datasets(sources: Sequence[Path], out: Path) -> dict:
 
     sk = first["skeleton"]
     schema = SkeletonSchema(sk["name"], tuple(sk["keypoints"]), tuple(tuple(e) for e in sk.get("edges", [])),
-                            tuple(tuple(p) for p in sk.get("flip_pairs", [])))
+                            tuple(tuple(p) for p in sk.get("flip_pairs", [])), tuple(sk.get("sigmas", ())))
     for split in store.splits():
         write_coco(store.load(split), schema, out / "annotations" / f"coco_{split}.json")
     write_yolo_yaml(out, schema, store.splits())

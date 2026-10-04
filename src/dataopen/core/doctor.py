@@ -15,6 +15,7 @@ from typing import Any, Optional
 import numpy as np
 
 from .annotation import AnnotationBuilder
+from .anthropometry import SEGMENTS
 from .calibration import check_probes, diagnose
 from .imageio import read_image, write_png
 from .interfaces import AdapterError, IGameAdapter
@@ -23,9 +24,7 @@ from .projection import project
 from .randomization import DomainRandomizationController
 from .viz import draw_annotations
 
-# (joint a, joint b, min m, max m): typical adult segment lengths, used to catch wrong bone mapping
-_SEGMENTS = (("l_shoulder", "l_elbow", 0.15, 0.45), ("l_elbow", "l_wrist", 0.15, 0.42),
-             ("pelvis", "l_knee", 0.28, 0.65), ("l_knee", "l_ankle", 0.28, 0.62), ("head", "neck", 0.06, 0.40))
+_SEGMENTS = SEGMENTS
 
 
 @dataclass

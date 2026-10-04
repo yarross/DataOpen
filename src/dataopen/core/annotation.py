@@ -40,6 +40,7 @@ class AnnotationConfig:
 class BuildResult:
     annotations: list[Annotation] = field(default_factory=list)
     verdicts: dict[int, Verdict] = field(default_factory=dict)  # entity_id -> verdict
+    ignored_boxes: list[tuple[float, float, float, float]] = field(default_factory=list)  # persons present but not labeled
     warnings: list[str] = field(default_factory=list)
 
 
@@ -47,6 +48,7 @@ class AnnotationBuilder:
     def __init__(self, schema: SkeletonSchema, config: Optional[AnnotationConfig] = None) -> None:
         self.schema = schema
         self.cfg = config or AnnotationConfig()
+        self._last_bbox: Optional[tuple[float, float, float, float]] = None
 
     def build(self, snap: FrameSnapshot) -> BuildResult:
         res = BuildResult()
@@ -57,9 +59,12 @@ class AnnotationBuilder:
             res.verdicts[ent.entity_id] = verdict
             if ann is not None:
                 res.annotations.append(ann)
+            elif verdict is not Verdict.ABSENT and self._last_bbox is not None:
+                res.ignored_boxes.append(self._last_bbox)
         return res
 
     def _entity(self, ent: EntityState, snap: FrameSnapshot) -> tuple[Optional[Annotation], Verdict]:
+        self._last_bbox = None
         cam, cfg = snap.camera, self.cfg
         uv, z = project(ent.skeleton_world, cam)
         flags = visibility_flags(uv, z, cam, ent.joint_valid, snap.depth, cfg.depth_tol,
@@ -74,6 +79,7 @@ class AnnotationBuilder:
         if bbox is None:
             return None, Verdict.IGNORE_BAD_BBOX
         x, y, w, h = bbox
+        self._last_bbox = bbox
         if h < cfg.negligible_height_px:
             return None, Verdict.NEGLIGIBLE
         if h < cfg.min_bbox_height_px or w < cfg.min_bbox_width_px:

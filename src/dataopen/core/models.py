@@ -116,6 +116,7 @@ class SceneSpec:
     environment: dict[str, Any]
     actors: list[dict[str, Any]]
     area: SpawnArea = field(default_factory=SpawnArea)
+    units: dict[str, Any] = field(default_factory=dict)  # the unit-interval draws behind the values (replay, feedback)
 
 
 @dataclass
@@ -128,6 +129,7 @@ class FrameSpec:
     kind: FrameKind
     camera: CameraSpec
     actor_frame: list[dict[str, Any]]
+    units: dict[str, Any] = field(default_factory=dict)
 
     @property
     def frame_id(self) -> str:

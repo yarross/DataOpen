@@ -17,8 +17,13 @@ class SkeletonSchema:
     keypoints: tuple[str, ...]
     edges: tuple[tuple[str, str], ...]
     flip_pairs: tuple[tuple[str, str], ...]
+    # Per-keypoint OKS falloff constants (COCO convention: how precisely a human annotator can place the point).
+    # Empty tuple = a uniform default.
+    sigmas: tuple[float, ...] = ()
 
     def __post_init__(self) -> None:
+        if self.sigmas and len(self.sigmas) != len(self.keypoints):
+            raise ValueError("sigmas must have one value per keypoint")
         names = set(self.keypoints)
         if len(names) != len(self.keypoints):
             raise ValueError("duplicate keypoint names")
@@ -40,6 +45,9 @@ class SkeletonSchema:
             ia, ib = self.index(a), self.index(b)
             idx[ia], idx[ib] = ib, ia
         return idx
+
+    def oks_sigmas(self) -> list[float]:
+        return list(self.sigmas) if self.sigmas else [0.07] * self.num_keypoints
 
     def coco_skeleton(self) -> list[list[int]]:
         """COCO `skeleton` is 1-based."""
@@ -69,6 +77,9 @@ HUMAN_13 = SkeletonSchema(
         ("l_shoulder", "r_shoulder"), ("l_elbow", "r_elbow"), ("l_wrist", "r_wrist"),
         ("l_knee", "r_knee"), ("l_ankle", "r_ankle"),
     ),
+    # COCO sigmas where the point exists (shoulders .079, elbows .072, wrists .062, hips .107, knees .087, ankles .089);
+    # head ~ between ears/eyes, neck not in COCO.
+    sigmas=(0.04, 0.06, 0.079, 0.079, 0.072, 0.072, 0.062, 0.062, 0.107, 0.087, 0.087, 0.089, 0.089),
 )
 
 

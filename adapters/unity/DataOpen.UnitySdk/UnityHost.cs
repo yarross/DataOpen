@@ -4,6 +4,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.MemoryMappedFiles;
 using UnityEngine;
 
 namespace DataOpen
@@ -48,6 +49,7 @@ namespace DataOpen
                 case "capture_frame": return CaptureFrame(c);
                 case "release": return Done();
                 case "commit": return Commit(c);
+                case "peek": return Peek(c);
                 case "discard": return Discard(c);
                 case "end_scene": return EndScene(c);
                 case "health": return Health(c);
@@ -79,7 +81,7 @@ namespace DataOpen
             c.Result["engine"] = "unity";
             c.Result["game_version"] = bindings.GameVersion();
             c.Result["mod_version"] = "0.1.0";
-            c.Result["capabilities"] = new List<object> { "probes", "engine_visibility", "hull_points", "image_engine" };
+            c.Result["capabilities"] = new List<object> { "probes", "engine_visibility", "hull_points", "image_engine", "image_peek", "image_shm" };
             c.Result["image"] = new Dictionary<string, object> { { "width", width }, { "height", height } };
             c.Result["schema_errors"] = new List<object>();
             c.Result["parameter_space"] = bindings.ParameterSpace();
@@ -246,6 +248,52 @@ namespace DataOpen
             byte[] bytes = (ext == ".jpg" || ext == ".jpeg") ? ImageConversion.EncodeToJPG(tex, 95) : ImageConversion.EncodeToPNG(tex);
             File.WriteAllBytes(dest, bytes);
             UnityEngine.Object.Destroy(tex);
+        }
+
+        /// <summary>Pixels of a pending frame for in-the-loop validation, without committing it: written into the shared-memory
+        /// segment the core created (Windows named file mapping; zero copy for the core), or to a staged PNG file.</summary>
+        IEnumerator Peek(Call c)
+        {
+            string token = Json.Str(c.Params, "frame_token");
+            Texture2D tex;
+            if (!pending.TryGetValue(token, out tex) || tex == null) { c.Fail("NoSuchFrame", "no pending image for " + token); yield break; }
+            var shm = Json.Obj(c.Params, "shm");
+            if (shm != null)
+            {
+                try
+                {
+                    WriteShared(tex, Json.Str(shm, "name"), (long)Json.Num(shm, "capacity"));
+                    c.Result["transport"] = "shm";
+                    c.Result["width"] = tex.width;
+                    c.Result["height"] = tex.height;
+                    c.Result["format"] = "rgb24";
+                    yield break;
+                }
+                catch (Exception e) { log("shared-memory peek failed, using a staged file: " + e.Message); }
+            }
+            string rel = "staging/peek_" + token + ".png";
+            string path = Path.Combine(mailboxDir, rel.Replace('/', Path.DirectorySeparatorChar));
+            Directory.CreateDirectory(Path.GetDirectoryName(path));
+            File.WriteAllBytes(path, ImageConversion.EncodeToPNG(tex));
+            c.Result["transport"] = "file";
+            c.Result["staged"] = rel;
+            c.Result["width"] = tex.width;
+            c.Result["height"] = tex.height;
+        }
+
+        static void WriteShared(Texture2D tex, string name, long capacity)
+        {
+            int w = tex.width, h = tex.height;
+            long need = (long)w * h * 3;
+            if (need > capacity) throw new InvalidOperationException("frame does not fit the shared-memory slot");
+            byte[] raw = tex.GetRawTextureData();  // RGB24, rows bottom-up
+            using (var mmf = MemoryMappedFile.OpenExisting(name))
+            using (var view = mmf.CreateViewAccessor(0, need))
+            {
+                int stride = w * 3;
+                for (int y = 0; y < h; y++)       // the core expects top-down rows
+                    view.WriteArray(y * (long)stride, raw, (h - 1 - y) * stride, stride);
+            }
         }
 
         IEnumerator Discard(Call c)

@@ -435,6 +435,14 @@ return function(R)
     return rel
   end
 
+  function host.peek_image(token, max_side, rt)
+    local data = world.buffers[token]
+    if not data then return nil end
+    local rel = cfg.staging .. "/peek_" .. token .. ".dat"   -- PNG bytes; the core reads it by content, not extension
+    write_binary(rel, data)
+    return rel, cfg.width, cfg.height
+  end
+
   function host.discard_image(token) world.buffers[token] = nil end
 
   ---------------------------------------------------------------------------------------------

@@ -211,6 +211,14 @@ def compute_stats(records: list[FrameRecord], names: list[str]) -> dict[str, Any
     errs = [r.meta["probe_max_err_px"] for r in records if "probe_max_err_px" in r.meta]
     if errs:
         st["probe_error_px"] = {"p50": round(float(np.percentile(errs, 50)), 3), "max": round(float(max(errs)), 3)}
+    qs = [r.meta["quality"] for r in records if r.meta.get("quality")]
+    if qs:
+        st["quality"] = {"tiers": dict(Counter(q["tier"] for q in qs)),
+                         "difficulty": {f"p{p}": round(float(np.percentile([q["difficulty"] for q in qs], p)), 3)
+                                        for p in (10, 50, 90)},
+                         "mean_oks": round(float(np.mean([q["metrics"]["mean_oks"] for q in qs if q["metrics"]["evaluated"]])), 3)
+                         if any(q["metrics"]["evaluated"] for q in qs) else None,
+                         "evaluated_share": round(sum(q["metrics"]["evaluated"] for q in qs) / len(qs), 3)}
     scenes = {r.scene_index for r in records}
     st["scenes"] = len(scenes)
     st["frames_per_scene_mean"] = round(len(records) / max(1, len(scenes)), 2)
@@ -227,7 +235,7 @@ def write_reports(rep: VerifyReport, root: Path) -> None:
              f"- persons per frame: {s.get('persons_per_frame')}",
              f"- bbox height px: {s.get('bbox_height_px')}",
              f"- time of day (3h bins from 00:00): {s.get('time_of_day_hist_3h_bins')}",
-             f"- weather: {s.get('weather')}", f"- probe error px: {s.get('probe_error_px')}", "",
+             f"- quality: {s.get('quality')}", f"- weather: {s.get('weather')}", f"- probe error px: {s.get('probe_error_px')}", "",
              f"## Issues ({len(rep.issues)})"]
     lines += [f"- **{i.severity}** `{i.code}` {i.where}: {i.message}" for i in rep.issues] or ["none"]
     lines += ["", "## Keypoint visibility", "", "| keypoint | visible | occluded | out |", "|---|---|---|---|"]

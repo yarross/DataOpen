@@ -12,9 +12,12 @@ CAPTURE_KEYS = ["frame_token", "tick", "camera", "entities", "probes", "warnings
                 "right", "up", "fov_v_deg", "near", "entity_id", "rig_id", "skeleton_world", "joint_valid",
                 "engine_visibility", "hull_points", "meta", "world", "screen"]
 METHODS = ["hello", "begin_scene", "capture_frame", "release", "commit", "discard", "end_scene", "selftest", "health",
-           "shutdown"]
+           "shutdown", "peek"]
 SELFTEST_KEYS = ["checks", "name", "ok", "detail", "hint", "data", "unmapped", "bones_found"]
 REQUEST_KEYS = ["frame_id", "frame", "image_mode", "frame_token", "dest", "options", "bone_map", "schema", "keypoints"]
+PEEK_KEYS = ["transport", "width", "height", "staged"]
+SHM_KEYS = ["shm", "capacity"]          # C# only: Lua has no shared memory and answers peek with a staged file
+# `max_side` is a hint a mod may ignore (neither implementation downscales yet)
 
 
 @pytest.mark.parametrize("keys", [HELLO_KEYS, CAPTURE_KEYS, METHODS, SELFTEST_KEYS, REQUEST_KEYS])
@@ -22,6 +25,19 @@ def test_csharp_sdk_uses_the_protocol_keys(keys):
     src = "".join(p.read_text() for p in (ROOT / "unity" / "DataOpen.UnitySdk").glob("*.cs"))
     missing = [k for k in keys if f'"{k}"' not in src]
     assert not missing, f"C# SDK never mentions these protocol keys: {missing}"
+
+
+def test_peek_keys_are_present_in_every_mod_implementation():
+    cs = "".join(p.read_text() for p in (ROOT / "unity" / "DataOpen.UnitySdk").glob("*.cs"))
+    lua = (ROOT / "lua" / "runtime" / "dataopen_rpc.lua").read_text()
+    for k in PEEK_KEYS:
+        assert f'"{k}"' in cs, f"C# peek never mentions {k}"
+        assert k in lua, f"Lua peek never mentions {k}"
+    for k in SHM_KEYS:
+        assert f'"{k}"' in cs
+    for cap in ("image_peek", "image_shm"):
+        assert f'"{cap}"' in cs
+    assert '"image_peek"' in lua
 
 
 def test_lua_runtime_uses_the_protocol_keys():

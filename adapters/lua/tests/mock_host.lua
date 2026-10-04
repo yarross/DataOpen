@@ -201,6 +201,13 @@ return function(R, dir, opts)
     return name
   end
 
+  function host.peek_image(token, max_side, rt)
+    if not world.pending[token] then return nil end
+    local name = "staging/peek_" .. token .. ".png"
+    host.fs.write(name, opts.png or "not-a-png")
+    return name, W, H
+  end
+
   function host.discard_image(token) world.pending[token] = nil end
   function host.end_scene(rt) world.actors = {} end
 

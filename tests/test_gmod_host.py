@@ -194,3 +194,20 @@ def test_visibility_binding_uses_the_world_trace(tmp_path, png):
         a.capture.discard(snap)
     finally:
         g.close()
+
+
+def test_closed_loop_in_gmod_peek_via_staged_dat_file(tmp_path, png):
+    from dataopen.core.schema import HUMAN_13
+    from dataopen.quality.evaluators.simulated import SimulatedEvaluator
+    from dataopen.quality.pipeline import QualityConfig, QualityPipeline
+    g, a, mailbox = start(tmp_path, png)
+    try:
+        a.connect()
+        assert "image_peek" in a.caps
+        q = QualityPipeline(HUMAN_13, SimulatedEvaluator(HUMAN_13), QualityConfig())
+        rep = DatasetOrchestrator(a, SessionConfig(tmp_path / "ds", seed=2, target_frames=12, frames_per_scene=4,
+                                                   negative_ratio=0.2), quality=q).run()
+        assert rep.accepted == 12 and rep.quality["pipeline"]["frames_without_pixels"] == 0
+        assert not [p for p in (mailbox / "staging").iterdir() if p.name != "selftest.dat"]
+    finally:
+        g.close()

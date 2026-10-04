@@ -17,19 +17,23 @@ import json
 import logging
 import threading
 import time
-from collections import Counter
+from collections import Counter, deque
+from concurrent.futures import Future
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Optional, Sequence
 
-from .annotation import AnnotationBuilder, AnnotationConfig
+from .annotation import AnnotationBuilder, AnnotationConfig, BuildResult
 from .calibration import ProbeResult, check_probes, diagnose
 from .card import write_dataset_card
 from .export import CanonicalStore, write_coco, write_yolo_label, write_yolo_yaml
 from .interfaces import AdapterError, IGameAdapter
-from .models import CaptureRequest, FrameKind, FrameRecord, SceneSpec
+from .models import CaptureRequest, FrameKind, FrameRecord, FrameSnapshot, FrameSpec, SceneSpec
 from .randomization import DomainRandomizationController, IDomainRandomizer, derive_seed
 from .validation import IFrameValidator, default_validators
+
+if TYPE_CHECKING:  # the quality subsystem is optional: the core runs without importing it
+    from ..quality.pipeline import QualityOutcome, QualityPipeline, RejectSink
 
 log = logging.getLogger("dataopen")
 
@@ -82,10 +86,25 @@ class SessionReport:
     wall_seconds: float = 0.0
     stop_reason: str = ""
     error: str = ""
+    quality: dict[str, Any] = field(default_factory=dict)
 
     @property
     def fps(self) -> float:
         return self.accepted / self.wall_seconds if self.wall_seconds else 0.0
+
+
+@dataclass
+class _Pending:
+    """A frame that passed the cheap checks and is being validated by the quality pipeline while the engine moves on."""
+
+    spec: FrameSpec
+    snap: FrameSnapshot
+    scene: SceneSpec
+    fi: int
+    kind: FrameKind
+    built: BuildResult
+    future: "Future[QualityOutcome]"
+    probe_err: Optional[float]
 
 
 class DatasetOrchestrator:
@@ -96,6 +115,7 @@ class DatasetOrchestrator:
         randomizer: Optional[IDomainRandomizer] = None,
         builder: Optional[AnnotationBuilder] = None,
         validators: Optional[Sequence[IFrameValidator]] = None,
+        quality: Optional["QualityPipeline"] = None,
     ) -> None:
         self.adapter, self.cfg = adapter, config
         self.schema = adapter.info.schema
@@ -109,6 +129,13 @@ class DatasetOrchestrator:
         self._stop = threading.Event()
         self._probe_streak = 0
         self._last_probe: Optional[ProbeResult] = None
+        self.quality = quality
+        self.feedback = randomizer_feedback(self.randomizer)
+        self.rejects: Optional["RejectSink"] = None
+        if quality is not None:
+            from ..quality.pipeline import RejectSink
+            self.rejects = RejectSink(config.out_dir / "quality", quality.cfg.reject_samples_per_tier,
+                                      quality.cfg.audit_fraction, config.seed)
 
     def request_stop(self) -> None:
         """Graceful stop (SIGINT handler): finish the current frame, flush, write reports."""
@@ -117,6 +144,9 @@ class DatasetOrchestrator:
     # ---- manifest (scene-granular checkpoint) ----
     def _load_manifest(self) -> dict:
         if self.cfg.resume and self.manifest_path.exists():
+            fb = self.cfg.out_dir / "feedback_state.json"
+            if self.feedback is not None and fb.exists():
+                self.feedback.load_state(json.loads(fb.read_text()))
             return json.loads(self.manifest_path.read_text())
         if self.cfg.out_dir.exists() and any(self.cfg.out_dir.iterdir()):
             raise FileExistsError(f"{self.cfg.out_dir} is not empty; use resume=True or another dir")
@@ -196,6 +226,8 @@ class DatasetOrchestrator:
                 self.adapter.close()
             except AdapterError:
                 pass
+            if self.quality is not None:
+                self.quality.close()
         self._save_manifest(rep, local_scene)
         self._finalize(rep, time.perf_counter() - t0)
         if abort is not None:
@@ -250,9 +282,12 @@ class DatasetOrchestrator:
         a.environment.apply(scene)
         handles = a.spawner.spawn(scene)
         self._timed("scene_setup", t)
+        inflight: deque[_Pending] = deque()
+        max_inflight = self.quality.cfg.max_inflight if self.quality is not None else 0
         try:
             for fi in range(self.cfg.frames_per_scene):
-                if rep.accepted >= self.cfg.target_frames or rep.attempts >= max_attempts:
+                self._drain(inflight, rep, records, wait=False)
+                if rep.accepted + len(inflight) >= self.cfg.target_frames or rep.attempts >= max_attempts:
                     break
                 if self._stop.is_set() or (self.cfg.max_wall_time_s
                                             and time.perf_counter() - t0 > self.cfg.max_wall_time_s):
@@ -269,26 +304,45 @@ class DatasetOrchestrator:
                 snap = a.capture.capture(CaptureRequest(spec.frame_id, spec, w, h))
                 self._timed("capture", t)
                 try:
-                    reason = self._process(spec, snap, scene, fi, kind, rep, records)
+                    res = self._stage_a(spec, snap, scene, fi, kind, rep, records)
                 except BaseException:
                     a.capture.discard(snap)
                     raise
-                if reason:
-                    rep.rejects[reason] = rep.rejects.get(reason, 0) + 1
+                if isinstance(res, str):
+                    rep.rejects[res] = rep.rejects.get(res, 0) + 1
                     a.capture.discard(snap)
+                    if self.feedback is not None:       # a wasted attempt is information too: avoid these parameters
+                        from ..quality.types import rejected_verdict
+                        self.feedback.observe(scene, spec, rejected_verdict(res))
+                elif isinstance(res, _Pending):
+                    inflight.append(res)
+                    while len(inflight) > max_inflight:
+                        self._finish(inflight.popleft(), rep, records)
+            self._drain(inflight, rep, records, wait=True)
+        except BaseException:
+            for p in inflight:                       # best effort: free engine-side pixels and shared-memory slots
+                p.future.cancel()
+                try:
+                    a.capture.discard(p.snap)
+                except Exception:
+                    pass
+            raise
         finally:
             try:
                 a.spawner.despawn_all()
             except AdapterError as e:
                 log.warning("despawn_all failed: %s", e)
 
-    def _process(self, spec, snap, scene, fi, kind, rep, records) -> Optional[str]:
-        """Annotate + validate + commit one captured frame. Returns a reject reason or None."""
+    def _stage_a(self, spec: FrameSpec, snap: FrameSnapshot, scene: SceneSpec, fi: int, kind: FrameKind,
+                 rep: SessionReport, records: list[FrameRecord]):
+        """Cheap synchronous checks. Returns a reject reason, a _Pending (quality validation running), or None
+        (accepted and committed right away when there is no quality pipeline)."""
         t = time.perf_counter()
         probe_reason = self._check_probes(snap, rep)
         self._timed("probe_check", t)
         if probe_reason:
             return probe_reason
+        probe_err = round(self._last_probe.max_err, 3) if (self._last_probe is not None and snap.probes) else None
 
         t = time.perf_counter()
         built = self.builder.build(snap)
@@ -300,18 +354,78 @@ class DatasetOrchestrator:
         if reason:
             return reason
 
+        if self.quality is None:
+            self._commit(spec, snap, scene, fi, kind, built, None, probe_err, rep, records)
+            return None
+
+        from ..quality.pipeline import QualityItem
+        t = time.perf_counter()
+        pixels = self.adapter.capture.peek_pixels(snap, self.quality.cfg.max_side)
+        self._timed("peek_pixels", t)
+        item = QualityItem(spec.frame_id, built.annotations, snap.entities, kind is FrameKind.NEGATIVE,
+                           built.ignored_boxes, pixels, rep.attempts)
+        return _Pending(spec, snap, scene, fi, kind, built, self.quality.submit(item), probe_err)
+
+    def _drain(self, inflight: "deque[_Pending]", rep: SessionReport, records: list[FrameRecord], wait: bool) -> None:
+        while inflight and (wait or inflight[0].future.done()):
+            self._finish(inflight.popleft(), rep, records)
+
+    def _finish(self, p: _Pending, rep: SessionReport, records: list[FrameRecord]) -> None:
+        """Apply the quality verdict of a frame (in capture order): commit it, or drop it and keep the evidence."""
+        from ..quality.pipeline import EvaluatorFailure
+        t = time.perf_counter()
+        try:
+            outcome = p.future.result()
+        except EvaluatorFailure as e:
+            self.adapter.capture.discard(p.snap)
+            raise SessionAborted(f"the quality evaluator keeps failing: {e}") from e
+        self._timed("quality_wait", t)
+        v, pixels = outcome.verdict, outcome.pixels
+        try:
+            if v.tier.is_drop:
+                reason = f"quality_{v.tier.value}"
+                rep.rejects[reason] = rep.rejects.get(reason, 0) + 1
+                assert self.rejects is not None
+                self.rejects.handle(p.spec.frame_id, v, pixels.array if pixels is not None else None)
+                self.adapter.capture.discard(p.snap)
+            else:
+                self._commit(p.spec, p.snap, p.scene, p.fi, p.kind, p.built, v, p.probe_err, rep, records)
+        finally:
+            if pixels is not None:
+                pixels.release()
+        if self.feedback is not None:
+            self.feedback.observe(p.scene, p.spec, v)
+
+    def _commit(self, spec: FrameSpec, snap: FrameSnapshot, scene: SceneSpec, fi: int, kind: FrameKind,
+                built: BuildResult, verdict, probe_err: Optional[float], rep: SessionReport,
+                records: list[FrameRecord]) -> None:
         t = time.perf_counter()
         rel = Path("images") / scene.split / f"{spec.frame_id}.{self.cfg.image_ext}"
         self.adapter.capture.commit(snap, self.cfg.out_dir / rel)
         self._timed("commit_image", t)
         meta: dict[str, Any] = {"seed": spec.seed, "tick": snap.tick, "environment": scene.environment,
-                                "camera": asdict(spec.camera), "warnings": built.warnings}
-        if self._last_probe is not None and snap.probes:
-            meta["probe_max_err_px"] = round(self._last_probe.max_err, 3)
+                                "camera": asdict(spec.camera), "warnings": built.warnings,
+                                "actors": scene.actors, "actor_frame": spec.actor_frame,
+                                "units": {"scene": scene.units, "frame": spec.units}}
+        if probe_err is not None:
+            meta["probe_max_err_px"] = probe_err
+        if verdict is not None:
+            meta["quality"] = verdict.to_dict()
+            feats = {pf.entity_id: pf for pf in verdict.features.persons}
+            matches = {m.entity_id: m for m in verdict.metrics.persons}
+            for ann in built.annotations:
+                pf, m = feats.get(ann.entity_id), matches.get(ann.entity_id)
+                if pf is not None:
+                    ann.meta.update({"occlusion_index": round(pf.occlusion_index, 4),
+                                     "contrast_rate": round(pf.contrast_rate, 4),
+                                     "perceptibility": round(pf.perceptibility, 4)})
+                if m is not None and verdict.metrics.evaluated:
+                    ann.meta["oks"] = round(m.oks, 4)
+            rep.quality.setdefault("tiers", {})
+            rep.quality["tiers"][verdict.tier.value] = rep.quality["tiers"].get(verdict.tier.value, 0) + 1
         records.append(FrameRecord(spec.frame_id, scene.scene_index, fi, scene.split, rel.as_posix(),
                                    snap.camera.width, snap.camera.height, kind, built.annotations, meta))
         rep.accepted += 1
-        return None
 
     def _flush_scene(self, scene: SceneSpec, records: list[FrameRecord]) -> None:
         t = time.perf_counter()
@@ -320,6 +434,8 @@ class DatasetOrchestrator:
             if "yolo" in self.cfg.formats:
                 for r in records:
                     write_yolo_label(r, self.cfg.out_dir / "labels")
+        if self.feedback is not None and hasattr(self.feedback, "save"):
+            self.feedback.save(self.cfg.out_dir / "feedback_state.json")
         self._timed("export", t)
 
     def _finalize(self, rep: SessionReport, wall_s: float) -> None:
@@ -332,5 +448,17 @@ class DatasetOrchestrator:
             write_yolo_yaml(root, self.schema, splits)
         rep.wall_seconds = wall_s
         rep.stage_seconds = {k: round(v, 3) for k, v in self._t.items()}
+        if self.quality is not None or self.feedback is not None:
+            from ..quality.report import write_closed_loop_report
+            stats = self.quality.stats() if self.quality is not None else None
+            rep.quality = {**rep.quality, **({"pipeline": stats} if stats else {})}
+            write_closed_loop_report(root, stats, dict(self.rejects.total) if self.rejects else {},
+                                     self.feedback.report() if self.feedback is not None else None,
+                                     (r for s_ in splits for r in self.store.load(s_)))
         (root / "report.json").write_text(json.dumps(asdict(rep), indent=2))
         write_dataset_card(root, self.adapter, self.cfg, rep, self.schema, self.store)
+
+
+def randomizer_feedback(randomizer) -> Optional[Any]:
+    """The randomizer, if it can learn from verdicts (duck-typed: no import of the quality package needed)."""
+    return randomizer if hasattr(randomizer, "observe") and hasattr(randomizer, "state") else None

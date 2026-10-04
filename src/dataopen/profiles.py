@@ -38,6 +38,7 @@ class GameProfile:
     bone_map: dict[str, list[list[Any]]] = field(default_factory=dict)
     session: dict[str, Any] = field(default_factory=dict)
     server: dict[str, Any] = field(default_factory=dict)
+    quality: dict[str, Any] = field(default_factory=dict)
     provenance: dict[str, Any] = field(default_factory=dict)
     status: dict[str, Any] = field(default_factory=dict)
 
@@ -51,7 +52,7 @@ class GameProfile:
             mailbox_dir=d.get("mailbox_dir", ""), width=int(r.get("width", 1280)), height=int(r.get("height", 720)),
             capture_mode=c.get("mode", "auto"), grabber_region=c.get("region"),
             mod_options=dict(d.get("mod_options", {})), bone_map=dict(d.get("bones", {})),
-            session=dict(d.get("session", {})), server=dict(d.get("server", {})),
+            session=dict(d.get("session", {})), server=dict(d.get("server", {})), quality=dict(d.get("quality", {})),
             provenance=dict(d.get("provenance", {})), status=dict(d.get("status", {})))
 
     def mailbox(self, override: Optional[str] = None) -> Optional[Path]:

@@ -41,11 +41,20 @@ def coco_dict(records: Iterable[FrameRecord], schema: SkeletonSchema) -> dict:
     images, anns = [], []
     ann_id = 1
     for img_id, r in enumerate(records, start=1):
-        images.append({"id": img_id, "file_name": r.file_name, "width": r.width, "height": r.height,
-                       "is_negative": r.kind.value == "negative"})
+        image = {"id": img_id, "file_name": r.file_name, "width": r.width, "height": r.height,
+                 "is_negative": r.kind.value == "negative"}
+        q = r.meta.get("quality")
+        if q:  # frame difficulty metadata (COCO allows extra fields; ignored by standard loaders)
+            image.update({"tier": q["tier"], "difficulty": q["difficulty"], "weight": q["weight"],
+                          "occlusion_index": q["occlusion_index"], "contrast_rate": q["contrast_rate"]})
+            if q["metrics"]["evaluated"]:
+                image["mean_oks"] = q["metrics"]["mean_oks"]
+        images.append(image)
         for a in r.annotations:
             kp = a.keypoints
+            extra = {k: a.meta[k] for k in ("oks", "occlusion_index", "contrast_rate", "perceptibility") if k in a.meta}
             anns.append({
+                **extra,
                 "id": ann_id, "image_id": img_id, "category_id": 1, "iscrowd": 0,
                 "keypoints": [round(float(x), 2) if i % 3 != 2 else int(x) for i, x in enumerate(kp.reshape(-1))],
                 "num_keypoints": a.num_keypoints,

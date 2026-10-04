@@ -19,7 +19,7 @@ from typing import Any, Callable, Optional, Sequence
 
 import numpy as np
 
-from ..core.imageio import write_image
+from ..core.imageio import read_image, write_image
 from ..core.interfaces import (AdapterError, AdapterInfo, Capability, ICaptureBridge, IEntitySpawner,
                                IEnvironmentController, IGameAdapter, ISkeletonExtractor)
 from ..core.models import CaptureRequest, EntityHandle, EntityState, FrameSnapshot, FrameSpec, SceneSpec
@@ -27,6 +27,8 @@ from ..core.protocol import (PROTOCOL_VERSION, adapter_space_from_dict, frame_to
                              snapshot_from_wire)
 from ..core.randomization import AdapterParameterSpace
 from ..core.schema import HUMAN_13, BoneMapping, SkeletonSchema
+from ..quality.interfaces import PixelHandle
+from ..quality.shm import ShmRing
 from ..core.transport import FileMailboxTransport
 
 _CAPS = {"engine_visibility": Capability.ENGINE_VISIBILITY, "hull_points": Capability.HULL_POINTS,
@@ -76,6 +78,7 @@ class RemoteOptions:
     capture_timeout_s: float = 120.0
     grab_delay_s: float = 0.05                 # let a frozen frame reach the screen before grabbing
     commit_wait_s: float = 10.0
+    shm_slots: int = 4                         # shared-memory frame slots for in-the-loop validation
 
 
 class _Spawner(IEntitySpawner):
@@ -182,6 +185,46 @@ class _Bridge(ICaptureBridge):
         if snapshot.meta.get("image_mode") != "host":
             self.a._call("discard", {"frame_token": snapshot.frame_token})
 
+    def peek_pixels(self, snapshot: FrameSnapshot, max_side: Optional[int] = None) -> Optional[PixelHandle]:
+        """Pixels in core memory without committing: host mode already has them; engine mode asks the mod to write them
+        into a shared-memory slot (zero copy) or, for mods without shared memory, into a staged file."""
+        a = self.a
+        token = snapshot.frame_token
+        if snapshot.meta.get("image_mode") == "host":
+            img = self._pending.get(token)
+            return PixelHandle(img) if img is not None else None
+        if "image_peek" not in a.caps:
+            return None
+        cam = snapshot.camera
+        need = cam.width * cam.height * 3
+        if "image_shm" in a.caps and a.ring is not None:
+            if need > a.ring.capacity:
+                a.ring.grow(need)
+            slot = a.ring.acquire()
+            try:
+                res = a._call("peek", {"frame_token": token, "max_side": max_side,
+                                       "shm": {"name": slot.name, "capacity": slot.capacity}})
+                if res.get("transport") == "shm":
+                    return PixelHandle(slot.view(int(res["width"]), int(res["height"])), lambda: a.ring.release(slot))
+            except BaseException:
+                a.ring.release(slot)
+                raise
+            a.ring.release(slot)                       # the mod answered with a file instead
+        else:
+            res = a._call("peek", {"frame_token": token, "max_side": max_side})
+        staged = res.get("staged")
+        if not staged:
+            return None
+        path = Path(staged) if Path(staged).is_absolute() else a.transport.dir / staged
+        deadline = time.monotonic() + a.options.commit_wait_s
+        while not (path.exists() and path.stat().st_size > 0):
+            if time.monotonic() > deadline:
+                raise AdapterError(f"mod acknowledged peek but {path} was not written")
+            time.sleep(0.005)
+        img = read_image(path)
+        path.unlink(missing_ok=True)
+        return PixelHandle(img)
+
 
 class RemoteGameAdapter(IGameAdapter):
     def __init__(self, transport: FileMailboxTransport, options: Optional[RemoteOptions] = None,
@@ -189,6 +232,8 @@ class RemoteGameAdapter(IGameAdapter):
         self.transport, self.options, self.schema, self.grabber = transport, options or RemoteOptions(), schema, grabber
         self.hello: dict[str, Any] = {}
         self.capture_mode = "engine"
+        self.caps: set[str] = set()
+        self.ring: Optional[ShmRing] = None
         self._info: Optional[AdapterInfo] = None
         self._space: Optional[AdapterParameterSpace] = None
         self._active = True
@@ -229,7 +274,10 @@ class RemoteGameAdapter(IGameAdapter):
         if res.get("schema_errors"):
             raise AdapterError("mod cannot provide the requested skeleton schema: " + "; ".join(res["schema_errors"]))
         caps = set(res.get("capabilities", []))
+        self.caps = caps
         self.capture_mode = self._resolve_mode(caps)
+        if "image_shm" in caps and self.ring is None:
+            self.ring = ShmRing(o.shm_slots, max(1920 * 1080 * 3, (o.image_size or (0, 0))[0] * (o.image_size or (0, 0))[1] * 3))
         img = res.get("image") or {}
         size = o.image_size or (int(img.get("width", 1280)), int(img.get("height", 720)))
         self.hello = res
@@ -248,7 +296,10 @@ class RemoteGameAdapter(IGameAdapter):
         return want
 
     def close(self) -> None:
-        pass  # never stop the user's game; use shutdown() explicitly
+        # never stop the user's game (use shutdown() explicitly); only free the shared-memory ring
+        if self.ring is not None:
+            self.ring.close()
+            self.ring = None
 
     def restart(self) -> None:
         self.connect()  # the mod re-initialises its state on hello

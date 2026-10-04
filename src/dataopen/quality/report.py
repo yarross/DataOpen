@@ -1,0 +1,66 @@
+"""closed_loop_report.{json,md} and quality_index.json: what the validator saw and what the loop learned."""
+from __future__ import annotations
+
+import json
+from collections import Counter
+from pathlib import Path
+from typing import Any, Iterable, Optional
+
+from ..core.models import FrameRecord
+
+
+def quality_index(records: Iterable[FrameRecord]) -> dict[str, Any]:
+    """frame_id -> {tier, difficulty, weight, mean_oks, ...} for sampling, curricula and weighted training."""
+    out = {}
+    for r in records:
+        q = r.meta.get("quality")
+        if q:
+            out[r.frame_id] = {"tier": q["tier"], "difficulty": q["difficulty"], "weight": q["weight"],
+                               "occlusion_index": q["occlusion_index"], "contrast_rate": q["contrast_rate"],
+                               "mean_oks": q["metrics"]["mean_oks"] if q["metrics"]["evaluated"] else None,
+                               "reasons": q["reasons"]}
+    return out
+
+
+def write_closed_loop_report(root: Path, pipeline_stats: Optional[dict[str, Any]], reject_totals: dict[str, int],
+                             feedback_report: Optional[dict[str, Any]], records: Iterable[FrameRecord]) -> None:
+    root = Path(root)
+    records = list(records)
+    idx = quality_index(records)
+    if idx:
+        (root / "quality_index.json").write_text(json.dumps(idx))
+    kept = Counter(v["tier"] for v in idx.values())
+    data = {"pipeline": pipeline_stats, "kept_by_tier": dict(kept), "dropped_by_tier": dict(reject_totals),
+            "feedback": feedback_report}
+    (root / "closed_loop_report.json").write_text(json.dumps(data, indent=2))
+
+    lines = ["# Closed-loop validation report", ""]
+    if pipeline_stats:
+        lines += [f"- evaluator: `{pipeline_stats.get('backend')}`; frames judged: {pipeline_stats['frames']}; "
+                  f"run through the model: {pipeline_stats['evaluated_by_model']}; "
+                  f"dropped by cheap gates (no inference needed): {pipeline_stats['dropped_by_cheap_gates']}; "
+                  f"mean inference: {pipeline_stats['mean_inference_ms']} ms; evaluator errors: {pipeline_stats['evaluator_errors']}",
+                  f"- kept: {dict(kept)}", f"- dropped: {dict(reject_totals)}", ""]
+    lines += ["How to read it: `keep_hard` frames are visible people the baseline model struggles on (the most valuable "
+              "ones, weight > 1 in `quality_index.json`). Dropped tiers never enter the dataset; `quality/rejects/` and "
+              "`quality/audit/` hold examples. Audit a few: if many dropped frames look usable, loosen the thresholds. "
+              "Dropping only on evidence independent of the model (broken skeleton, broken picture, imperceptible person, "
+              "an unlabeled person) is what keeps the dataset from being biased toward what the model already knows.", ""]
+    if feedback_report:
+        lines += [f"## Adaptive randomization ({'active' if feedback_report['adapting'] else 'still warming up'})", "",
+                  f"observed frames: {feedback_report['observed_frames']}; remembered edge cases: "
+                  f"{feedback_report['remembered_hard_examples']}", ""]
+        pc = feedback_report.get("pairwise_appearance_coverage")
+        if pc:
+            lines += [f"appearance pair coverage: {pc['pairs_seen']}/{pc['pairs_possible']} ({pc['coverage']}) "
+                      f"over {', '.join(pc['keys'])}", ""]
+        lines += ["### Where the model struggles (bins with >= 10 frames, worst first)", "",
+                  "| parameter | bin | frames | mean OKS | hard | dropped | tilt |", "|---|---|---|---|---|---|---|"]
+        rows = []
+        for key, d in feedback_report["parameters"].items():
+            for r in d["rows"]:
+                if r["n"] >= 10:
+                    rows.append((r["mean_oks"] if r["mean_oks"] is not None else 1.0 - (r["hard_rate"] or 0), key, r))
+        for _, key, r in sorted(rows, key=lambda x: x[0])[:25]:
+            lines.append(f"| {key} | {r['bin']} | {r['n']} | {r['mean_oks']} | {r['hard_rate']} | {r['drop_rate']} | {r['tilt']} |")
+    (root / "closed_loop_report.md").write_text("\n".join(lines) + "\n")

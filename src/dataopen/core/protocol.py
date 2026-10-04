@@ -20,7 +20,7 @@ from .schema import SkeletonSchema
 PROTOCOL_VERSION = 1
 
 METHODS = ("hello", "begin_scene", "capture_frame", "release", "commit", "discard", "end_scene",
-           "selftest", "health", "shutdown")
+           "selftest", "health", "shutdown", "peek")
 
 
 # ---- parameter spaces --------------------------------------------------------------------

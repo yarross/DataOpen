@@ -105,7 +105,7 @@ def test_projected_ground_truth_matches_rendered_joint_pixels():
         for a in built.annotations:
             for x, y, v in a.keypoints:
                 if v == 2 and 3 < x < 317 and 3 < y < 237:
-                    assert img[int(y), int(x)].tolist() == [200, 60, 60]
+                    assert img[int(y), int(x)].tolist() == list(snap.meta["colors"][a.entity_id])
                     checked += 1
         ad.capture.discard(snap)
     assert checked > 50

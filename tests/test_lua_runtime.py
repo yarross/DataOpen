@@ -246,3 +246,33 @@ def test_garbage_stale_and_wrong_version_requests(flavor, tmp_path):
         assert "unknown method" in json.loads((mb / "res.json").read_text())["error"]["message"]
     finally:
         g.close()
+
+
+def test_peek_and_closed_loop_through_the_lua_runtime(flavor, tmp_path):
+    from dataopen.core.imageio import read_image
+    from dataopen.core.models import CaptureRequest, FrameKind
+    from dataopen.quality.evaluators.simulated import SimulatedEvaluator
+    from dataopen.quality.pipeline import QualityConfig, QualityPipeline
+    from dataopen.core.schema import HUMAN_13
+
+    g, a = make(flavor, tmp_path)
+    try:
+        a.connect()
+        assert "image_peek" in a.caps and "image_shm" not in a.caps and a.ring is None     # Lua: file transport only
+        from dataopen.core.randomization import DomainRandomizationController
+        rz = DomainRandomizationController(0, a.parameter_space())
+        scene = rz.sample_scene(0)
+        a.spawner.spawn(scene)
+        snap = a.capture.capture(CaptureRequest("f0", rz.sample_frame(scene, 0, FrameKind.POSITIVE), 160, 90))
+        h = a.capture.peek_pixels(snap)
+        assert h.array.shape == (90, 160, 3)
+        a.capture.commit(snap, tmp_path / "x" / "f0.png")                                  # peek did not consume it
+        assert np.array_equal(read_image(tmp_path / "x" / "f0.png"), h.array)
+        h.release()
+        out = tmp_path / "ds"
+        q = QualityPipeline(HUMAN_13, SimulatedEvaluator(HUMAN_13), QualityConfig())
+        rep = DatasetOrchestrator(a, SessionConfig(out, seed=3, target_frames=15, frames_per_scene=5), quality=q).run()
+        assert rep.accepted == 15 and rep.quality["pipeline"]["frames_without_pixels"] == 0
+        assert not list((tmp_path / "mb" / "staging").glob("peek_*"))                       # staged peeks are cleaned up
+    finally:
+        g.close()

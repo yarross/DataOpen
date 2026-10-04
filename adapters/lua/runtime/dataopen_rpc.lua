@@ -453,6 +453,7 @@ function H.hello(rt, p)
   if host.visibility then caps[#caps + 1] = "engine_visibility" end
   if host.entity_extras then caps[#caps + 1] = "hull_points" end
   if host.capture_image then caps[#caps + 1] = "image_engine" end
+  if host.peek_image then caps[#caps + 1] = "image_peek" end
   local w, h = 1280, 720
   if host.render_size then w, h = host.render_size() end
   return {
@@ -586,6 +587,15 @@ function H.commit(rt, p)
   rt:unfreeze()
   if staged then return { staged = staged } end
   return J.object({})
+end
+
+--- Pixels of a pending frame for in-the-loop validation, WITHOUT committing it. Lua has no shared memory, so the
+--- host writes the (PNG) data to a staged file in the mailbox folder and returns its relative name.
+function H.peek(rt, p)
+  if not rt.host.peek_image then error("this mod cannot peek pixels") end
+  local staged, w, h = rt.host.peek_image(p.frame_token, p.max_side, rt)
+  if not staged then error("no pending image for " .. tostring(p.frame_token)) end
+  return { transport = "file", staged = staged, width = w, height = h }
 end
 
 function H.discard(rt, p)

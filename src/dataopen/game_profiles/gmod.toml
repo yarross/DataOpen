@@ -27,6 +27,28 @@ negative_ratio = 0.1
 # [bones]
 # pelvis = [["ValveBiped.Bip01_L_Thigh", 0.5], ["ValveBiped.Bip01_R_Thigh", 0.5]]
 
+# Closed-loop validation (docs/QUALITY.md). Off by default: enable it and point it at a model, or run the cheap gates only
+# (broken skeleton / blank frame / imperceptible person) with evaluator = "none".
+[quality]
+enabled = false
+evaluator = "onnx"                 # onnx | simulated (test double) | none
+model = ""                         # path to a YOLOv8-pose or D-FINE ONNX model
+format = "yolov8_pose"             # yolov8_pose | dfine
+input_size = [640, 640]
+device = "cpu"                     # cpu | cuda | tensorrt
+keypoint_map = "coco17"            # 17-point COCO model -> our 13 points; "identity" for a model trained on our schema
+max_inflight = 2                   # frames validated while the engine renders the next ones
+sample_every = 1                   # run the model on every N-th frame (cheap gates always run)
+audit_fraction = 0.02              # share of dropped frames kept in quality/audit/ to measure false rejections
+
+[quality.policy]
+phantom_action = "hard"           # hard: spawn mode, a detection with no label is a model false positive
+suspect_action = "quarantine"
+
+[quality.feedback]                 # adaptive domain randomization (--adaptive)
+warmup_frames = 150
+exploit_p = 0.2
+
 [provenance]
 assets = "UNSPECIFIED: list the playermodels/NPCs/maps/addons used and their licences"
 

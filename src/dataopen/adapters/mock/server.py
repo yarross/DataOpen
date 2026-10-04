@@ -17,6 +17,8 @@ import numpy as np
 from ...core.interfaces import AdapterError
 from ...core.models import CaptureRequest, FrameSnapshot
 from ...core.projection import project, visibility_flags
+from ...core.imageio import write_image
+from ...quality.shm import attach
 from ...core.protocol import (PROTOCOL_VERSION, adapter_space_to_dict, frame_from_dict, scene_from_dict,
                               snapshot_to_wire, space_to_dict)
 from ...core.transport import MailboxServer
@@ -30,6 +32,8 @@ class MockServerOptions:
     wrong_probe_fov: float = 1.0    # multiply the focal length used for probes (FOV bug)
     unit_scale: float = 1.0         # 100 simulates a mod that forgot cm -> m
     swap_lr: bool = False           # left/right bones mapped to each other
+    image_peek: bool = True         # offer `peek` (pixels to the core before commit)
+    image_shm: bool = True          # ... through shared memory (False = staged file)
     mod_version: str = "mock-1"
 
 
@@ -47,7 +51,9 @@ def native_project(world, cam: dict[str, Any], fov_scale: float = 1.0):
 
 
 class MockGameServer:
-    def __init__(self, options: Optional[MockServerOptions] = None, width: int = 320, height: int = 240) -> None:
+    def __init__(self, options: Optional[MockServerOptions] = None, width: int = 320, height: int = 240,
+                 directory: Path | str = ".") -> None:
+        self.dir = Path(directory)
         self.opt = options or MockServerOptions()
         self.adapter = MockGameAdapter(width, height)
         self.handles: list = []
@@ -67,6 +73,8 @@ class MockGameServer:
         errs = [] if list(want) == list(self.adapter.info.schema.keypoints) else \
             [f"schema mismatch: mod has {self.adapter.info.schema.keypoints}, core asked for {want}"]
         caps = ["engine_visibility", "hull_points"] + (["image_engine"] if self.opt.engine_images else [])
+        if self.opt.engine_images and self.opt.image_peek:
+            caps += ["image_peek"] + (["image_shm"] if self.opt.image_shm else [])
         w, h = self.adapter.info.image_size
         self.handles, self.snaps = [], {}
         return {"protocol": PROTOCOL_VERSION, "game": "mock", "engine": "mock", "game_version": "0",
@@ -130,6 +138,25 @@ class MockGameServer:
             pr["world"] = [c * k for c in pr["world"]]
         return wire
 
+    def m_peek(self, p):
+        img = self.adapter.capture._pending.get(p["frame_token"])
+        if img is None:
+            raise AdapterError(f"no pending image for {p['frame_token']}")
+        h, w, _ = img.shape
+        shm = p.get("shm")
+        if shm and self.opt.image_shm:
+            if h * w * 3 > int(shm["capacity"]):
+                raise AdapterError("frame does not fit the shared-memory slot")
+            seg = attach(shm["name"])
+            try:
+                np.ndarray((h, w, 3), dtype=np.uint8, buffer=seg.buf)[:] = img      # the "game" writes the pixels
+            finally:
+                seg.close()
+            return {"transport": "shm", "width": w, "height": h, "format": "rgb24"}
+        rel = f"staging/peek_{p['frame_token']}.png"
+        write_image(Path(self.dir) / rel, img)
+        return {"transport": "file", "width": w, "height": h, "staged": rel}
+
     def m_release(self, p):
         return {}
 
@@ -167,7 +194,7 @@ class MockGameServer:
 def serve_mock(directory: Path | str, options: Optional[MockServerOptions] = None,
                stop: Optional[threading.Event] = None, width: int = 320, height: int = 240) -> MockGameServer:
     """Blocking server loop; returns after `stop` is set or the core sends `shutdown`."""
-    game = MockGameServer(options, width, height)
+    game = MockGameServer(options, width, height, directory)
     stop = stop or threading.Event()
     srv = MailboxServer(directory, game.handle)
     while not stop.is_set() and not game.stopped.is_set():

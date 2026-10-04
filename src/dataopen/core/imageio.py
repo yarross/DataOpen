@@ -72,3 +72,73 @@ def read_image_size(path: Path) -> tuple[int, int]:
                     return int(w), int(h)
                 f.seek(seglen - 2, 1)
     raise ValueError(f"cannot read image size of {path}")
+
+
+def _unfilter_png(raw: bytes, w: int, h: int, bpp: int) -> np.ndarray:
+    stride = w * bpp
+    out = np.zeros((h, stride), dtype=np.uint8)
+    prev = np.zeros(stride, dtype=np.int32)
+    pos = 0
+    for y in range(h):
+        ft = raw[pos]
+        line = np.frombuffer(raw, dtype=np.uint8, count=stride, offset=pos + 1).astype(np.int32)
+        pos += 1 + stride
+        if ft == 0:
+            cur = line
+        elif ft == 2:                                   # Up
+            cur = (line + prev) & 0xFF
+        else:                                           # Sub / Average / Paeth are sequential per byte
+            cur = line.copy()
+            for i in range(stride):
+                a = cur[i - bpp] if i >= bpp else 0
+                b = prev[i]
+                if ft == 1:
+                    cur[i] = (cur[i] + a) & 0xFF
+                elif ft == 3:
+                    cur[i] = (cur[i] + ((a + b) >> 1)) & 0xFF
+                elif ft == 4:
+                    c = prev[i - bpp] if i >= bpp else 0
+                    p = a + b - c
+                    pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                    pred = a if (pa <= pb and pa <= pc) else (b if pb <= pc else c)
+                    cur[i] = (cur[i] + pred) & 0xFF
+                else:
+                    raise ValueError(f"bad PNG filter {ft}")
+        out[y] = cur
+        prev = cur
+    return out
+
+
+def _read_png(data: bytes) -> np.ndarray:
+    pos, idat, w = 8, [], 0
+    h = depth = ctype = interlace = 0
+    while pos < len(data):
+        n = struct.unpack(">I", data[pos:pos + 4])[0]
+        tag = data[pos + 4:pos + 8]
+        body = data[pos + 8:pos + 8 + n]
+        if tag == b"IHDR":
+            w, h, depth, ctype, _, _, interlace = struct.unpack(">IIBBBBB", body)
+        elif tag == b"IDAT":
+            idat.append(body)
+        pos += 12 + n
+    if depth != 8 or ctype not in (0, 2, 6) or interlace:
+        raise ValueError("pure-Python PNG reader supports 8-bit gray/RGB/RGBA, non-interlaced; "
+                         "install Pillow for other formats")
+    ch = {0: 1, 2: 3, 6: 4}[ctype]
+    arr = _unfilter_png(zlib.decompress(b"".join(idat)), w, h, ch).reshape(h, w, ch)
+    if ch == 1:
+        arr = np.repeat(arr, 3, axis=2)
+    return np.ascontiguousarray(arr[:, :, :3])
+
+
+def read_image(path: Path) -> np.ndarray:
+    """RGB uint8 (H, W, 3). Uses Pillow when installed, otherwise a pure-Python PNG decoder."""
+    try:
+        from PIL import Image
+        with Image.open(path) as im:
+            return np.asarray(im.convert("RGB"))
+    except ImportError:
+        data = path.read_bytes()
+        if data[:8] != b"\x89PNG\r\n\x1a\n":
+            raise RuntimeError("reading JPEG needs Pillow: pip install 'dataopen[capture]'")
+        return _read_png(data)

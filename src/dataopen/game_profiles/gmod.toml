@@ -1,0 +1,35 @@
+id = "gmod"
+name = "Garry's Mod"
+engine = "source"
+archetype = "A-lua (built-in scripting, no injection)"
+# The addon reads/writes garrysmod/data/dataopen/. Set GMOD_DIR to your "GarrysMod" folder or pass --mailbox.
+mailbox_dir = "${GMOD_DIR}/garrysmod/data/dataopen"
+
+[render]
+width = 1280
+height = 720
+
+[capture]
+mode = "engine"        # the addon renders with render.RenderView and saves with render.Capture
+
+[mod_options]
+population_mode = "spawn"      # spawn | observe
+camera_mode = "free"           # free | player_relative
+settle_ticks = 3
+hud = false
+
+[session]
+frames_per_scene = 40
+negative_ratio = 0.1
+
+# Optional bone overrides: keypoint = [[bone_name, weight], ...]. The mod prints the real bone names
+# of the model in `dataopen doctor` if some keypoints cannot be resolved.
+# [bones]
+# pelvis = [["ValveBiped.Bip01_L_Thigh", 0.5], ["ValveBiped.Bip01_R_Thigh", 0.5]]
+
+[provenance]
+assets = "UNSPECIFIED: list the playermodels/NPCs/maps/addons used and their licences"
+
+[status]
+verified = "not verified on a real installation"
+notes = "Start the game with -insecure on a local listen server. Singleplayer or listen server only."

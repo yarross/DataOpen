@@ -29,6 +29,7 @@ class MockServerOptions:
     flip_probe_y: bool = False      # engine-native projection disagrees (y flipped)
     wrong_probe_fov: float = 1.0    # multiply the focal length used for probes (FOV bug)
     unit_scale: float = 1.0         # 100 simulates a mod that forgot cm -> m
+    swap_lr: bool = False           # left/right bones mapped to each other
     mod_version: str = "mock-1"
 
 
@@ -91,6 +92,12 @@ class MockGameServer:
             f = visibility_flags(uv, z, snap.camera, e.joint_valid, depth=snap.depth)
             e.engine_visibility = np.where(f == 2, 2, 1).astype(np.int8)
             e.meta["forward"] = [float(np.cos(actors[e.entity_id]["yaw"])), float(np.sin(actors[e.entity_id]["yaw"])), 0.0]
+        if self.opt.swap_lr:
+            flip = self.adapter.info.schema.flip_idx()
+            for e in snap.entities:
+                e.skeleton_world = e.skeleton_world[flip]
+                e.joint_valid = e.joint_valid[flip]
+                e.engine_visibility = e.engine_visibility[flip]
         self.snaps[snap.frame_token] = snap
         wire = snapshot_to_wire(snap)
         wire["probes"] = self._probes(wire)

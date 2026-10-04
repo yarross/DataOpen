@@ -1,0 +1,30 @@
+id = "valheim"
+name = "Valheim"
+engine = "unity-mono"
+archetype = "B-csharp (BepInEx plugin)"
+mailbox_dir = "${VALHEIM_DIR}/BepInEx/config/dataopen"
+
+[render]
+width = 1280
+height = 720
+
+[capture]
+mode = "engine"
+
+[mod_options]
+population_mode = "spawn"
+camera_mode = "free"
+settle_ticks = 3
+set_resolution = true          # the plugin forces the window to render.width x render.height
+hud = false
+
+[session]
+frames_per_scene = 40
+negative_ratio = 0.1
+
+[provenance]
+assets = "UNSPECIFIED: Valheim game assets (Iron Gate AB); check the licence before distributing derived data"
+
+[status]
+verified = "not verified on a real installation"
+notes = "Pin the game version (Steam beta branch) and use the BepInEx build for it; run a local world."

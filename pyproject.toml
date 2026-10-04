@@ -7,13 +7,20 @@ name = "dataopen"
 version = "0.1.0"
 description = "Universal core + game adapters for synthetic human-pose dataset collection"
 requires-python = ">=3.10"
-dependencies = ["numpy>=1.24"]
+dependencies = ["numpy>=1.24", "tomli>=2; python_version < '3.11'"]
 
 [project.optional-dependencies]
-dev = ["pytest>=7"]
+dev = ["pytest>=7", "lupa>=2", "ruff"]
+capture = ["mss>=9", "pillow>=10"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+dataopen = ["game_profiles/*.toml"]
+
+[project.scripts]
+dataopen = "dataopen.cli:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

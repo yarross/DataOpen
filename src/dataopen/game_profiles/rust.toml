@@ -1,0 +1,35 @@
+id = "rust"
+name = "Rust (own local server, no EAC)"
+engine = "unity-mono"
+archetype = "B-csharp (BepInEx client plugin) + RCON server control"
+mailbox_dir = "${RUST_DIR}/BepInEx/config/dataopen"
+
+[render]
+width = 1280
+height = 720
+
+[capture]
+mode = "engine"
+
+[mod_options]
+population_mode = "spawn"
+camera_mode = "player_relative"   # server controls spawning, the client camera follows the local player
+settle_ticks = 5
+set_resolution = true
+hud = false
+
+# Server control over RCON (WebSocket). Password comes from the environment, never from this file.
+[server]
+rcon = "127.0.0.1:28016"
+password_env = "RUST_RCON_PASSWORD"
+
+[session]
+frames_per_scene = 30
+negative_ratio = 0.1
+
+[provenance]
+assets = "UNSPECIFIED: Rust game assets (Facepunch Studios); check the licence before distributing derived data"
+
+[status]
+verified = "not verified on a real installation"
+notes = "Only against your own local server with EAC disabled. Heavy client; the game updates often, re-run doctor after every update."

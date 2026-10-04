@@ -23,11 +23,14 @@ def project(points_world: np.ndarray, cam: CameraModel) -> tuple[np.ndarray, np.
     return np.stack([u, v], axis=-1), z
 
 
+_EDGE_EPS = 0.01  # annotations are serialized with 2 decimals: 319.996 would round to 320.00 == width
+
+
 def in_frame_mask(uv: np.ndarray, z: np.ndarray, cam: CameraModel) -> np.ndarray:
     u, v = uv[..., 0], uv[..., 1]
     with np.errstate(invalid="ignore"):
         return (z > cam.near) & np.isfinite(u) & np.isfinite(v) & \
-            (u >= 0) & (u < cam.width) & (v >= 0) & (v < cam.height)
+            (u >= 0) & (u < cam.width - _EDGE_EPS) & (v >= 0) & (v < cam.height - _EDGE_EPS)
 
 
 def visibility_flags(

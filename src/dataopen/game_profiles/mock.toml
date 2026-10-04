@@ -1,0 +1,24 @@
+id = "mock"
+name = "Mock game (no installation needed)"
+engine = "mock"
+archetype = "reference"
+# empty mailbox_dir = run the mock in-process; pass --mailbox DIR to talk to `dataopen serve-mock` over the protocol
+mailbox_dir = ""
+
+[render]
+width = 320
+height = 240
+
+[capture]
+mode = "auto"
+
+[session]
+frames_per_scene = 25
+negative_ratio = 0.1
+
+[provenance]
+assets = "synthetic procedural mock; no third-party assets"
+
+[status]
+verified = "end-to-end in CI"
+notes = "Reference implementation of the wire protocol; use it to try every command without a game."

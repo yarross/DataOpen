@@ -6,6 +6,7 @@
   dataopen verify  DIR                             check a collected dataset, write qa_report.{json,md}
   dataopen preview DIR                             contact sheet with labels drawn on top
   dataopen merge   OUT SRC1 SRC2 ...               merge shards
+  dataopen install --game gmod|valheim|rust --dir GAME_DIR   install the in-game mod
   dataopen serve-mock --mailbox DIR                a fake game that speaks the protocol (try everything offline)
 """
 from __future__ import annotations
@@ -134,6 +135,19 @@ def _coerce(kind, value: str):
     return float(value) if kind == "float" else value
 
 
+def _cmd_install(a) -> int:
+    from .installer import NEXT_STEPS, InstallError, install
+    try:
+        paths = install(a.game, Path(a.dir))
+    except InstallError as e:
+        print(f"install failed: {e}")
+        return EXIT_FAILED_CHECK
+    for p in paths:
+        print(f"installed: {p}")
+    print("\nNext steps:\n" + NEXT_STEPS[a.game].format(dir=a.dir))
+    return EXIT_OK
+
+
 def _cmd_serve_mock(a) -> int:
     from .adapters.mock.server import MockServerOptions, serve_mock
     kw = {}
@@ -194,6 +208,11 @@ def build_parser() -> argparse.ArgumentParser:
     m.add_argument("out")
     m.add_argument("sources", nargs="+")
     m.set_defaults(fn=_cmd_merge)
+
+    i = sub.add_parser("install", help="install the in-game mod")
+    i.add_argument("--game", required=True, choices=["gmod", "valheim", "rust"])
+    i.add_argument("--dir", required=True, help="the game's folder")
+    i.set_defaults(fn=_cmd_install)
 
     s = sub.add_parser("serve-mock", help="fake game that speaks the protocol")
     s.add_argument("--mailbox", required=True)

@@ -22,6 +22,17 @@ hud = false
 [server]
 rcon = "127.0.0.1:28016"
 password_env = "RUST_RCON_PASSWORD"
+settle_s = 1.5
+# Command templates sent before each scene. Placeholders: time_of_day (hours), rain, fog, cloud_cover (0..1)
+# derived from the core's environment sample. Adjust the command names for your Rust version (VERIFY).
+scene_begin = [
+  "env.progresstime false",
+  "env.time {time_of_day:.2f}",
+  "weather.rain {rain:.2f}",
+  "weather.fog {fog:.2f}",
+  "weather.clouds {cloud_cover:.2f}",
+]
+scene_end = []
 
 [session]
 frames_per_scene = 30

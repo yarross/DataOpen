@@ -372,6 +372,8 @@ def build_parser() -> argparse.ArgumentParser:
     register_detector(sub)
     from .runtime.cli import register as register_runtime
     register_runtime(sub)
+    from .bioprofile.cli import register as register_bioprofile
+    register_bioprofile(sub)
     return p
 
 

@@ -39,6 +39,8 @@ class GameProfile:
     session: dict[str, Any] = field(default_factory=dict)
     server: dict[str, Any] = field(default_factory=dict)
     quality: dict[str, Any] = field(default_factory=dict)
+    schema: dict[str, Any] = field(default_factory=dict)     # [schema] target = "shooter12", [schema.params] ...
+    mock_variant: str = ""                                   # mock engine only: "" | "shooter"
     provenance: dict[str, Any] = field(default_factory=dict)
     status: dict[str, Any] = field(default_factory=dict)
 
@@ -53,6 +55,7 @@ class GameProfile:
             capture_mode=c.get("mode", "auto"), grabber_region=c.get("region"),
             mod_options=dict(d.get("mod_options", {})), bone_map=dict(d.get("bones", {})),
             session=dict(d.get("session", {})), server=dict(d.get("server", {})), quality=dict(d.get("quality", {})),
+            schema=dict(d.get("schema", {})), mock_variant=str(d.get("mock_variant", "")),
             provenance=dict(d.get("provenance", {})), status=dict(d.get("status", {})))
 
     def mailbox(self, override: Optional[str] = None) -> Optional[Path]:

@@ -6,6 +6,7 @@ from typing import Optional
 
 import numpy as np
 
+from .card import schema_for_dir
 from .export import CanonicalStore
 from .imageio import read_image, write_png
 from .models import FrameKind, FrameRecord
@@ -15,8 +16,9 @@ from .viz import contact_sheet, draw_annotations
 
 def make_preview(root: Path, n: int = 12, seed: int = 0, out: Optional[Path] = None, split: Optional[str] = None,
                  cols: int = 4, tile_width: int = 480, include_negatives: bool = True,
-                 schema: SkeletonSchema = HUMAN_13) -> Path:
+                 schema: Optional[SkeletonSchema] = None) -> Path:
     root = Path(root)
+    schema = schema or schema_for_dir(root, HUMAN_13)
     store = CanonicalStore(root)
     recs: list[FrameRecord] = []
     for s in store.splits():

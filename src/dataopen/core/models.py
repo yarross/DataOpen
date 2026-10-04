@@ -198,6 +198,7 @@ class Annotation:
     keypoints: np.ndarray  # (K, 3) float: x, y, v ; x=y=0 when v == 0
     bbox: tuple[float, float, float, float]  # x, y, w, h in pixels (clipped to frame)
     meta: dict[str, Any] = field(default_factory=dict)
+    class_id: int = 0                        # index into SkeletonSchema.classes (e.g. 0 = player_ct, 1 = player_t)
 
     @property
     def num_keypoints(self) -> int:
@@ -213,13 +214,14 @@ class Annotation:
             "keypoints": [round(float(x), 2) if i % 3 != 2 else int(x)
                           for i, x in enumerate(self.keypoints.reshape(-1))],
             "bbox": [round(float(x), 2) for x in self.bbox],
+            "class_id": self.class_id,
             "meta": self.meta,
         }
 
     @staticmethod
     def from_dict(d: dict[str, Any]) -> "Annotation":
         return Annotation(d["entity_id"], np.asarray(d["keypoints"], dtype=np.float64).reshape(-1, 3),
-                          tuple(d["bbox"]), d.get("meta", {}))
+                          tuple(d["bbox"]), d.get("meta", {}), int(d.get("class_id", 0)))
 
 
 @dataclass

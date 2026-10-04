@@ -1,0 +1,118 @@
+# Aim-oriented 12-point target schema for competitive-shooter pose estimation.
+# The point order IS the model's output order. Everything the closed loop needs to know about these points lives here:
+# change a point, a sigma, a weight or the primary target and no code changes (docs/SCHEMAS.md).
+[schema]
+name = "shooter12"
+source = "human13"                       # capture schema (what the game mod reports) the rules below are written against
+keypoints = ["head_top", "head_center", "l_shoulder", "neck", "r_shoulder", "l_elbow", "spine", "r_elbow",
+             "l_wrist", "hip", "r_wrist", "center_of_mass"]
+edges = [["head_top", "head_center"], ["head_center", "neck"], ["neck", "l_shoulder"], ["neck", "r_shoulder"],
+         ["l_shoulder", "l_elbow"], ["l_elbow", "l_wrist"], ["r_shoulder", "r_elbow"], ["r_elbow", "r_wrist"],
+         ["neck", "spine"], ["spine", "hip"]]
+flip_pairs = [["l_shoulder", "r_shoulder"], ["l_elbow", "r_elbow"], ["l_wrist", "r_wrist"]]
+primary = ["head_center"]                # the point the loop optimizes for (aim target)
+classes = ["player_ct", "player_t"]      # entity meta `team` = "ct" / "t" (or the full class name)
+class_key = "team"
+
+[schema.roles]                           # geometry roles used by the generic heuristics (self-occlusion, etc.)
+head = "head_center"
+neck = "neck"
+pelvis = "hip"
+l_shoulder = "l_shoulder"
+r_shoulder = "r_shoulder"
+
+[schema.groups]
+head = ["head_top", "head_center"]
+torso = ["neck", "spine", "hip"]
+arms = ["l_shoulder", "r_shoulder", "l_elbow", "r_elbow", "l_wrist", "r_wrist"]
+
+# Constants of the rules below. They depend on how a game's rig places its head bone: calibrate per game by looking at
+# the `dataopen doctor` overlay (the head_center dot must sit in the middle of the head, head_top on the crown).
+[schema.params]
+head_center_offset_m = 0.0               # head_center = head bone + this many meters up the neck->head axis
+head_top_offset_m = 0.12                 # head_top = head bone + this many meters up (crown)
+
+# sigma = OKS falloff (how precisely the point can be placed), weight = importance in the OKS average,
+# derived = a computed approximation rather than an anatomical landmark (it gets a looser sigma and a lower weight).
+[schema.points.head_top]
+sigma = 0.040
+weight = 1.0
+derived = true
+rule = "extend_m(neck, head, {head_top_offset_m})"
+
+[schema.points.head_center]
+sigma = 0.030
+weight = 3.0
+derived = true
+rule = "extend_m(neck, head, {head_center_offset_m})"
+
+[schema.points.l_shoulder]
+sigma = 0.079
+weight = 1.0
+rule = "copy(l_shoulder)"
+
+[schema.points.neck]
+sigma = 0.060
+weight = 0.5
+derived = true
+rule = "mean(l_shoulder, r_shoulder)"
+
+[schema.points.r_shoulder]
+sigma = 0.079
+weight = 1.0
+rule = "copy(r_shoulder)"
+
+[schema.points.l_elbow]
+sigma = 0.072
+weight = 1.0
+rule = "copy(l_elbow)"
+
+[schema.points.spine]
+sigma = 0.090
+weight = 0.5
+derived = true
+rule = "lerp(@hip, @neck, 0.5)"          # built on the LABELED neck and hip: the labels stay geometrically consistent
+
+[schema.points.r_elbow]
+sigma = 0.072
+weight = 1.0
+rule = "copy(r_elbow)"
+
+[schema.points.l_wrist]
+sigma = 0.062
+weight = 1.0
+rule = "copy(l_wrist)"
+
+[schema.points.hip]
+sigma = 0.090
+weight = 0.5
+derived = true
+rule = "copy(pelvis)"
+
+[schema.points.r_wrist]
+sigma = 0.062
+weight = 1.0
+rule = "copy(r_wrist)"
+
+[schema.points.center_of_mass]
+sigma = 0.120
+weight = 0.25
+derived = true
+# rough segment masses of the 13 rig points (head 8%, trunk 45%, arms 24%, legs 23% of the points' share)
+rule = "weighted(pelvis:0.25, neck:0.20, head:0.08, l_shoulder:0.04, r_shoulder:0.04, l_elbow:0.035, r_elbow:0.035, l_wrist:0.025, r_wrist:0.025, l_knee:0.09, r_knee:0.09, l_ankle:0.045, r_ankle:0.045); vis=majority"
+
+# How a baseline model of another keypoint set is mapped onto this schema (2D, same rule language; @x = derived target point).
+# Confidence of a derived point is the mean of its parents' (a profile view hides one ear but not the head).
+[schema.models.coco17]
+head_top = "extend(@neck, @head_center, 0.6)"
+head_center = "weighted(left_ear:1, right_ear:1, nose:1); vis=mean"
+l_shoulder = "copy(left_shoulder)"
+neck = "mean(left_shoulder, right_shoulder)"
+r_shoulder = "copy(right_shoulder)"
+l_elbow = "copy(left_elbow)"
+spine = "lerp(@hip, @neck, 0.5)"
+r_elbow = "copy(right_elbow)"
+l_wrist = "copy(left_wrist)"
+hip = "mean(left_hip, right_hip)"
+r_wrist = "copy(right_wrist)"
+center_of_mass = "weighted(left_hip:0.15, right_hip:0.15, left_shoulder:0.12, right_shoulder:0.12, nose:0.08, left_knee:0.09, right_knee:0.09, left_elbow:0.035, right_elbow:0.035, left_wrist:0.025, right_wrist:0.025, left_ankle:0.045, right_ankle:0.045); vis=mean"

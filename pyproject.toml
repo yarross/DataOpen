@@ -18,7 +18,7 @@ quality = ["onnxruntime>=1.17"]
 where = ["src"]
 
 [tool.setuptools.package-data]
-dataopen = ["game_profiles/*.toml"]
+dataopen = ["game_profiles/*.toml", "schemas/*.toml"]
 
 [project.scripts]
 dataopen = "dataopen.cli:main"

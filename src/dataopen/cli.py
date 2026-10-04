@@ -32,6 +32,7 @@ from .core.preview import make_preview
 from .core.qa import verify_dataset, write_reports
 from .factory import build_adapter
 from .core.annotation import AnnotationBuilder, AnnotationConfig
+from .core.schema_io import SchemaFileError, load_schema, resolve_target
 from .quality.factory import QualityConfigError, build_quality, build_randomizer
 from .profiles import ProfileError, list_profiles, load_profile
 
@@ -88,25 +89,44 @@ def _cmd_eval_image(a) -> int:
     from .core.models import Annotation
     from .core.schema import HUMAN_13
     from .core.viz import draw_annotations
-    from .quality.factory import build_evaluator
+    from .quality.factory import QualityConfigError, build_evaluator
+    bundle, schema = None, HUMAN_13
+    if a.schema:
+        try:
+            bundle = load_schema(a.schema)
+        except SchemaFileError as e:
+            print(f"schema error: {e}")
+            return EXIT_USAGE
+        schema = bundle.schema
     spec = {"evaluator": "onnx", "model": a.model, "format": a.format, "device": a.device,
-            "keypoint_map": a.keypoint_map, "conf_thr": a.conf}
-    ev = build_evaluator(spec, HUMAN_13)
+            "keypoint_map": a.keypoint_map or ("identity" if a.format == "table" else "coco17"), "conf_thr": a.conf}
+    if a.layout:
+        spec["layout"] = a.layout.split(",")
+    if a.coords:
+        spec["coords"] = a.coords
+    try:
+        ev = build_evaluator(spec, schema, bundle)
+    except (QualityConfigError, ValueError) as e:
+        print(f"cannot build the evaluator: {e}")
+        return EXIT_USAGE
     img = read_image(Path(a.image))
     preds = ev.predict([img])[0]
-    print(f"{ev.name}: {len(preds)} detections on {img.shape[1]}x{img.shape[0]}")
+    print(f"{ev.name}: {len(preds)} detections on {img.shape[1]}x{img.shape[0]} ({schema.name}, {schema.num_keypoints} points)")
     anns = []
     for i, p in enumerate(preds):
-        print(f"  #{i} score={p.score:.2f} bbox={tuple(round(v) for v in p.bbox)} "
+        cls = "" if p.class_id is None else f" class={schema.classes[p.class_id] if p.class_id < len(schema.classes) else p.class_id}"
+        print(f"  #{i} score={p.score:.2f}{cls} bbox={tuple(round(v) for v in p.bbox)} "
               f"keypoints={'yes' if p.keypoints is not None else 'no (box-only model)'}")
         if p.keypoints is not None:
             kp = p.keypoints.copy()
             kp[:, 2] = np.where(kp[:, 2] > 0.3, 2, 0)
+            for j in schema.primary_idx():                      # the aim point: print where the model puts it
+                print(f"      {schema.keypoints[j]}: ({p.keypoints[j, 0]:.1f}, {p.keypoints[j, 1]:.1f}) conf={p.keypoints[j, 2]:.2f}")
             anns.append(Annotation(i, kp, p.bbox))
         else:
-            anns.append(Annotation(i, np.zeros((13, 3)), p.bbox))
+            anns.append(Annotation(i, np.zeros((schema.num_keypoints, 3)), p.bbox))
     out = Path(a.out or "eval_overlay.png")
-    write_png(out, draw_annotations(img, anns, HUMAN_13))
+    write_png(out, draw_annotations(img, anns, schema))
     print(f"overlay: {out}")
     return EXIT_OK
 
@@ -140,20 +160,27 @@ def _cmd_collect(a) -> int:
                         provenance=dict(prof.provenance) | ({"note": a.provenance_note} if a.provenance_note else {}),
                         **{k: v for k, v in s.items() if k not in {"provenance"}})
     quality_spec = _quality_spec(prof.quality, a)
+    try:
+        bundle, mapping = resolve_target(a.schema or prof.schema.get("target"), adapter.info.schema,
+                                         prof.schema.get("params"))
+    except SchemaFileError as e:
+        print(f"schema error: {e}")
+        return EXIT_USAGE
+    target_schema = mapping.target if mapping is not None else adapter.info.schema
     quality_spec.setdefault("policy_file", str(out / "quality_policy.toml"))   # may be created while the run is going
     builder = None
     if quality_spec.get("min_person_px") is not None:
         mp = float(quality_spec["min_person_px"])
-        builder = AnnotationBuilder(adapter.info.schema, AnnotationConfig(min_bbox_height_px=mp,
+        builder = AnnotationBuilder(target_schema, AnnotationConfig(min_bbox_height_px=mp,
                                                                          negligible_height_px=min(12.0, mp)))
     try:
-        quality = build_quality(quality_spec, adapter.info.schema)
+        quality = build_quality(quality_spec, target_schema, rig_schema=adapter.info.schema, bundle=bundle)
         randomizer = build_randomizer(adapter, a.seed, a.adaptive, quality_spec.get("feedback"),
                                       quality_spec.get("balance"))
     except (QualityConfigError, ImportError, OSError, RuntimeError) as e:
         print(f"cannot start the quality subsystem: {e}")
         return EXIT_USAGE
-    orch = DatasetOrchestrator(adapter, cfg, randomizer=randomizer, builder=builder, quality=quality)
+    orch = DatasetOrchestrator(adapter, cfg, randomizer=randomizer, builder=builder, quality=quality, target=mapping)
     if threading.current_thread() is threading.main_thread():
         signal.signal(signal.SIGINT, lambda *_: (print("\nstopping after the current frame..."), orch.request_stop()))
     try:
@@ -272,6 +299,7 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--shard", default="0/1", help="i/n: take every n-th scene (run n game instances)")
     c.add_argument("--image-ext", default="png", choices=["png", "jpg"])
     c.add_argument("--provenance-note", help="origin/licence of the assets, stored in DATASET_CARD.json")
+    c.add_argument("--schema", help="target keypoint schema: a built-in name (shooter12) or a .toml file (docs/SCHEMAS.md)")
     c.add_argument("--no-doctor", action="store_true", help="skip the pre-flight integration check")
     q = c.add_argument_group("closed-loop quality validation (docs/QUALITY.md)")
     q.add_argument("--quality-model", help="ONNX model (YOLOv8-pose or D-FINE): validate every frame in memory")
@@ -311,9 +339,12 @@ def build_parser() -> argparse.ArgumentParser:
     e = sub.add_parser("eval-image", help="run a model on one image and draw its detections (checks model + mapping)")
     e.add_argument("--model", required=True)
     e.add_argument("--image", required=True)
-    e.add_argument("--format", default="yolov8_pose", choices=["yolov8_pose", "dfine"])
+    e.add_argument("--format", default="yolov8_pose", choices=["yolov8_pose", "dfine", "table"])
     e.add_argument("--device", default="cpu")
-    e.add_argument("--keypoint-map", default="coco17", choices=["coco17", "identity"])
+    e.add_argument("--keypoint-map", default=None, help="identity (the model emits the schema) | coco17 (mapped by the schema file)")
+    e.add_argument("--schema", help="target schema (shooter12 or a .toml); default: the 13-point human13")
+    e.add_argument("--layout", help="table format: comma-separated columns, e.g. xyxy,score,class,kp:12,vis:12")
+    e.add_argument("--coords", choices=["pixels", "normalized"])
     e.add_argument("--conf", type=float, default=0.25)
     e.add_argument("--out")
     e.set_defaults(fn=_cmd_eval_image)

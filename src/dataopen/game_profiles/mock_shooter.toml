@@ -1,0 +1,59 @@
+id = "mock_shooter"
+name = "Mock shooter (no installation needed): teams, headgear, camouflage, smoke, flashes, cover"
+engine = "mock"
+archetype = "reference"
+mock_variant = "shooter"            # the mock world with the extra parameters a shooter dataset needs
+mailbox_dir = ""
+
+[render]
+width = 640
+height = 640
+
+[capture]
+mode = "auto"
+
+# The target keypoint schema: 12 aim-oriented points + two classes (docs/SCHEMAS.md). Rule constants are per game.
+[schema]
+target = "shooter12"
+
+[session]
+frames_per_scene = 25
+negative_ratio = 0.1
+
+[quality]
+enabled = false                    # use --quality-static, --quality-sim or --quality-model
+evaluator = "onnx"
+model = ""
+# A model that already emits the 12 points + classes (640x640 RGB uint8 in, <= 20 detections out):
+format = "table"                   # table | yolov8_pose (COCO-17 baseline, mapped by [schema.models.coco17]) | dfine
+input_size = [640, 640]
+layout = ["xyxy", "score", "class", "kp:12", "vis:12"]   # column order of one detection row (decode.parse_layout)
+coords = "pixels"                  # pixels | normalized (relative to the 640x640 input)
+keypoint_map = "identity"          # identity = the model emits shooter12 itself; "coco17" for a COCO-17 baseline
+class_map = [0, 1]                 # model class index -> dataset class (player_ct, player_t)
+device = "cpu"
+max_inflight = 2
+sample_every = 1
+min_person_px = 20
+audit_fraction = 0.02
+
+[quality.policy]
+phantom_action = "hard"
+suspect_action = "quarantine"
+focus_priority = 0.7               # how strongly the aim point (head_center) steers difficulty and the randomizer
+
+[quality.balance]
+target_hard_share = 0.30
+max_reject_share = 0.15
+uniform_min = 0.10
+
+[quality.feedback]
+warmup_frames = 150
+exploit_p = 0.2
+
+[provenance]
+assets = "synthetic procedural mock; no third-party assets"
+
+[status]
+verified = "end-to-end in CI"
+notes = "Reference world for the shooter12 schema: team classes, headgear, camouflage, smoke, flashes, head cover."

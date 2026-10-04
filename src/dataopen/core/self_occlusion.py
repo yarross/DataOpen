@@ -62,10 +62,10 @@ def apply_self_occlusion(
     """Return a copy of `flags` with VISIBLE limb joints downgraded to OCCLUDED where the
     torso capsule or head sphere lies on the camera ray in front of them."""
     out = flags.copy()
-    idx = {n: schema.index(n) for n in ("neck", "pelvis", "head", "l_shoulder", "r_shoulder")
-           if n in schema.keypoints}
-    if len(idx) < 5:
+    roles = {r: schema.role(r) for r in ("neck", "pelvis", "head", "l_shoulder", "r_shoulder")}
+    if any(v is None for v in roles.values()):
         return out
+    idx = {r: schema.index(n) for r, n in roles.items() if n is not None}
     neck, pelvis = skeleton_world[idx["neck"]], skeleton_world[idx["pelvis"]]
     head = skeleton_world[idx["head"]]
     sw = float(np.linalg.norm(skeleton_world[idx["l_shoulder"]] - skeleton_world[idx["r_shoulder"]]))

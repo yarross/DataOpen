@@ -53,6 +53,7 @@ class QualityConfig:
     match_conf: float = 0.25
     oks_match_thr: float = 0.5
     phantom_conf: float = 0.6
+    focus_hit_rel: float = 0.04       # aim-point error (fraction of person height) that still counts as a hit
     audit_fraction: float = 0.02      # share of DROPPED frames saved to audit/ to measure the false-rejection rate
     reject_samples_per_tier: int = 25  # dropped frames saved per tier for human review
     policy_file: Optional[str] = None  # TOML with new thresholds; re-read while running (mtime), applied between frames
@@ -80,10 +81,12 @@ class QualityOutcome:
 
 class QualityPipeline:
     def __init__(self, schema: SkeletonSchema, evaluator: Optional[IModelEvaluator], config: Optional[QualityConfig] = None,
-                 calculator: Optional[IQualityMetricCalculator] = None, policy: Optional[IQualityPolicy] = None) -> None:
+                 calculator: Optional[IQualityMetricCalculator] = None, policy: Optional[IQualityPolicy] = None,
+                 rig_schema: Optional[SkeletonSchema] = None) -> None:
         self.schema, self.evaluator, self.cfg = schema, evaluator, config or QualityConfig()
+        self.rig_schema = rig_schema or schema            # 3D sanity runs on what the mod reports, before any derivation
         self.calc = calculator or DefaultMetricCalculator(schema, self.cfg.match_conf, self.cfg.oks_match_thr,
-                                                          self.cfg.phantom_conf)
+                                                          self.cfg.phantom_conf, focus_hit_rel=self.cfg.focus_hit_rel)
         self.policy = policy or DefaultQualityPolicy(self.cfg.policy)
         self.pool = ThreadPoolExecutor(max_workers=max(1, self.cfg.workers), thread_name_prefix="dataopen-quality")
         self._lock = threading.Lock()
@@ -106,7 +109,7 @@ class QualityPipeline:
         img = item.pixels.array if item.pixels is not None else None
         if img is None:
             self.no_pixels += 1
-        feats = compute_features(img, item.annotations, item.entities, self.schema, self.cfg.features)
+        feats = compute_features(img, item.annotations, item.entities, self.schema, self.cfg.features, self.rig_schema)
         empty = QualityMetrics()
         v = self.policy.decide(empty, feats, item.is_negative)       # cheap gates first
         if v.tier.is_drop or self.evaluator is None or img is None:

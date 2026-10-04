@@ -93,7 +93,8 @@ class AnnotationBuilder:
         keep = flags > 0
         kp[keep, :2] = uv[keep]          # v == 0 keeps x = y = 0 (COCO convention)
         kp[:, 2] = flags
-        return Annotation(ent.entity_id, kp, bbox, {"rig_id": ent.rig_id, **ent.meta}), Verdict.ACCEPT
+        class_id, _ = self.schema.class_of(ent.meta)
+        return Annotation(ent.entity_id, kp, bbox, {"rig_id": ent.rig_id, **ent.meta}, class_id), Verdict.ACCEPT
 
     def _bbox(self, ent, uv, z, flags, cam) -> Optional[tuple[float, float, float, float]]:
         cfg = self.cfg

@@ -85,12 +85,21 @@ class KeypointMap:
     def identity(n: int) -> "KeypointMap":
         return KeypointMap([[(i, 1.0)] for i in range(n)])
 
+    @property
+    def is_identity(self) -> bool:
+        return all(p == [(i, 1.0)] for i, p in enumerate(self.parts))
+
     @staticmethod
     def coco17_to_human13() -> "KeypointMap":
         """head=ears, neck=mid-shoulders, pelvis=mid-hips (COCO has neither a neck nor a pelvis point)."""
         return KeypointMap([
             [(3, .5), (4, .5)], [(5, .5), (6, .5)], [(5, 1)], [(6, 1)], [(7, 1)], [(8, 1)], [(9, 1)], [(10, 1)],
             [(11, .5), (12, .5)], [(13, 1)], [(14, 1)], [(15, 1)], [(16, 1)]])
+
+    @staticmethod
+    def from_mapping(mapping) -> "MappedKeypoints":
+        """A model keypoint set -> the target schema through `SchemaMapping` rules (derived points included)."""
+        return MappedKeypoints(mapping)
 
     def apply(self, kp: np.ndarray) -> np.ndarray:
         """kp: (M, 3) model keypoints -> (K, 3) schema keypoints."""
@@ -101,6 +110,21 @@ class KeypointMap:
             out[j, :2] = (kp[idx, :2] * w[:, None]).sum(axis=0) / w.sum()
             out[j, 2] = kp[idx, 2].min()
         return out
+
+
+class MappedKeypoints(KeypointMap):
+    """KeypointMap backed by `core.derive.SchemaMapping`: the same rule language the ground truth is derived with."""
+
+    def __init__(self, mapping) -> None:
+        self.mapping = mapping
+        self.parts = []
+
+    @property
+    def is_identity(self) -> bool:
+        return False
+
+    def apply(self, kp: np.ndarray) -> np.ndarray:
+        return self.mapping.apply2d(kp)
 
 
 def decode_yolov8_pose(raw: np.ndarray, lb: Letterbox, conf_thr: float, iou_thr: float,
@@ -148,3 +172,122 @@ def decode_dfine(labels: np.ndarray, boxes: np.ndarray, scores: np.ndarray, conf
         if int(l) == person_label and float(s) >= conf_thr:
             out.append(Prediction((float(b[0]), float(b[1]), float(b[2] - b[0]), float(b[3] - b[1])), float(s), None))
     return out
+
+
+# ---- fixed-size detection table (set-prediction heads: <= N detections per image, usually no NMS needed) ----------------
+
+_SIMPLE_WIDTH = {"xyxy": 4, "cxcywh": 4, "xywh": 4, "score": 1, "class": 1}
+
+
+def parse_layout(layout: Sequence[str]) -> list[tuple[str, int, int]]:
+    """Layout tokens in column order -> [(kind, start, width)].
+
+    xyxy | cxcywh | xywh   box (4 columns)             score            confidence (1)
+    class                  class index (1)             class_scores:N   N class scores (score = max, class = argmax)
+    kp:K                   K keypoints as x,y,conf interleaved (3K)    kpxy:K  x,y interleaved (2K)
+    kpconf:K               K keypoint confidences      vis:K            K visibility values (probability or logit)
+    pad:N                  N ignored columns
+    """
+    out, col = [], 0
+    for tok in layout:
+        kind, _, n = tok.partition(":")
+        if kind in _SIMPLE_WIDTH and not n:
+            w = _SIMPLE_WIDTH[kind]
+        elif kind in ("class_scores", "kp", "kpxy", "kpconf", "vis", "pad") and n.isdigit() and int(n) > 0:
+            w = {"kp": 3, "kpxy": 2}.get(kind, 1) * int(n)
+        else:
+            raise ValueError(f"bad layout token {tok!r}; see decode.parse_layout for the vocabulary")
+        out.append((kind, col, w))
+        col += w
+    kinds = [k for k, _, _ in out]
+    if not ({"xyxy", "cxcywh", "xywh"} & set(kinds)) or not ({"score", "class_scores"} & set(kinds)):
+        raise ValueError("a layout needs a box (xyxy | cxcywh | xywh) and a score (score | class_scores:N)")
+    return out
+
+
+def _sigmoid_if_logits(a: np.ndarray) -> np.ndarray:
+    return 1.0 / (1.0 + np.exp(-a)) if a.size and (a.min() < 0.0 or a.max() > 1.0) else a
+
+
+def decode_table(raw: np.ndarray, layout: Sequence[str], lb: Letterbox, conf_thr: float, coords: str = "pixels",
+                 kmap: Optional[KeypointMap] = None, class_map: Optional[Sequence[Optional[int]]] = None,
+                 max_det: int = 20, nms_iou: Optional[float] = None) -> list[Prediction]:
+    """raw: (1, N, C) or (N, C), one row per detection, columns as described by `layout`.
+    coords: "pixels" (model-input pixels) or "normalized" (0..1 of the model input). Undoes the letterbox."""
+    a = np.asarray(raw, dtype=np.float64)
+    a = a[0] if a.ndim == 3 else a
+    spec = parse_layout(layout)
+    width = sum(w for _, _, w in spec)
+    if a.ndim != 2 or a.shape[1] != width:
+        raise ValueError(f"table output has shape {a.shape}; layout {list(layout)} needs {width} columns")
+    if coords not in ("pixels", "normalized"):
+        raise ValueError("coords must be 'pixels' or 'normalized'")
+    sx, sy = (lb.in_w, lb.in_h) if coords == "normalized" else (1.0, 1.0)
+    cols = {k: (st, w) for k, st, w in spec}
+
+    def take(kind: str) -> Optional[np.ndarray]:
+        return a[:, cols[kind][0]:cols[kind][0] + cols[kind][1]] if kind in cols else None
+
+    if "xyxy" in cols:
+        b = take("xyxy")
+        xyxy = np.stack([b[:, 0] * sx, b[:, 1] * sy, b[:, 2] * sx, b[:, 3] * sy], axis=1)
+    elif "xywh" in cols:
+        b = take("xywh")
+        xyxy = np.stack([b[:, 0] * sx, b[:, 1] * sy, (b[:, 0] + b[:, 2]) * sx, (b[:, 1] + b[:, 3]) * sy], axis=1)
+    else:
+        b = take("cxcywh")
+        xyxy = np.stack([(b[:, 0] - b[:, 2] / 2) * sx, (b[:, 1] - b[:, 3] / 2) * sy,
+                         (b[:, 0] + b[:, 2] / 2) * sx, (b[:, 1] + b[:, 3] / 2) * sy], axis=1)
+    cls = None
+    if "class_scores" in cols:
+        cs = take("class_scores")
+        score, cls = cs.max(axis=1), cs.argmax(axis=1)
+    else:
+        score = take("score")[:, 0]
+        cls = take("class")[:, 0].astype(int) if "class" in cols else None
+    if "kp" in cols:
+        k = take("kp")
+        nk = k.shape[1] // 3
+        kpts = k.reshape(-1, nk, 3).copy()
+    elif "kpxy" in cols:
+        xy = take("kpxy")
+        nk = xy.shape[1] // 2
+        kpts = np.concatenate([xy.reshape(-1, nk, 2), np.ones((len(a), nk, 1))], axis=2)
+        if "kpconf" in cols:
+            kpts[:, :, 2] = take("kpconf")
+    else:
+        kpts, nk = None, 0
+    vis = _sigmoid_if_logits(take("vis")) if "vis" in cols else None
+    if kpts is not None:
+        kpts[:, :, 0] *= sx
+        kpts[:, :, 1] *= sy
+        kpts[:, :, 2] = _sigmoid_if_logits(kpts[:, :, 2])
+    score = _sigmoid_if_logits(score)
+
+    sel = np.where(score >= conf_thr)[0]
+    if sel.size == 0:
+        return []
+    order = sel[np.argsort(-score[sel])]
+    if nms_iou is not None:
+        order = order[nms(xyxy[order], score[order], nms_iou)]
+    preds = []
+    for i in order[:max_det]:
+        x1, y1, x2, y2 = (xyxy[i] - [lb.pad_x, lb.pad_y, lb.pad_x, lb.pad_y]) / lb.scale
+        x1, y1, x2, y2 = max(0.0, x1), max(0.0, y1), min(float(lb.orig_w), x2), min(float(lb.orig_h), y2)
+        kp = None
+        if kpts is not None:
+            kp = kpts[i].copy()
+            kp[:, 0] = (kp[:, 0] - lb.pad_x) / lb.scale
+            kp[:, 1] = (kp[:, 1] - lb.pad_y) / lb.scale
+            if kmap is not None:
+                kp = kmap.apply(kp)
+        v = None
+        if vis is not None and (kmap is None or kmap.is_identity):
+            v = np.asarray(vis[i], dtype=np.float64)       # a derived keypoint set has no per-point mask of its own
+        c = None
+        if cls is not None:
+            c = int(cls[i])
+            if class_map is not None:
+                c = class_map[c] if 0 <= c < len(class_map) else None
+        preds.append(Prediction((float(x1), float(y1), float(x2 - x1), float(y2 - y1)), float(score[i]), kp, c, v))
+    return preds

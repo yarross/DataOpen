@@ -24,9 +24,10 @@ def quality_index(records: Iterable[FrameRecord]) -> dict[str, Any]:
 
 
 FRAME_COLUMNS = ["frame_id", "set", "split", "verdict", "tier", "difficulty_score", "contrast_rate", "occlusion_index",
-                 "oks_score", "weight", "policy_version", "n_persons", "reasons"]
-PERSON_COLUMNS = ["frame_id", "set", "entity_id", "difficulty_score", "contrast_rate", "occlusion_index", "oks_score",
-                  "perceptibility"]
+                 "oks_score", "weight", "policy_version", "n_persons", "reasons", "focus_oks", "focus_difficulty",
+                 "class_accuracy"]
+PERSON_COLUMNS = ["frame_id", "set", "entity_id", "class_id", "difficulty_score", "contrast_rate", "occlusion_index",
+                  "oks_score", "perceptibility", "focus_oks", "focus_err_rel", "focus_visibility", "focus_perceptibility"]
 
 
 def write_quality_csv(root: Path, kept: Iterable[FrameRecord],
@@ -48,11 +49,15 @@ def write_quality_csv(root: Path, kept: Iterable[FrameRecord],
             evaluated = q["metrics"]["evaluated"]
             fw.writerow([r.frame_id, which, r.split, q.get("verdict", ""), q["tier"], q["difficulty"], q["contrast_rate"],
                          q["occlusion_index"], q["metrics"]["mean_oks"] if evaluated else "", q["weight"],
-                         q.get("policy_version", 0), len(r.annotations), ";".join(q["reasons"])])
+                         q.get("policy_version", 0), len(r.annotations), ";".join(q["reasons"]),
+                         "" if q.get("focus_oks") is None else q["focus_oks"], q.get("focus_difficulty", ""),
+                         "" if q["metrics"].get("class_accuracy") is None else q["metrics"]["class_accuracy"]])
             for a in r.annotations:
                 m = a.meta
-                gw.writerow([r.frame_id, which, a.entity_id, m.get("difficulty_score", ""), m.get("contrast_rate", ""),
-                             m.get("occlusion_index", ""), m.get("oks_score", ""), m.get("perceptibility", "")])
+                gw.writerow([r.frame_id, which, a.entity_id, a.class_id, m.get("difficulty_score", ""),
+                             m.get("contrast_rate", ""), m.get("occlusion_index", ""), m.get("oks_score", ""),
+                             m.get("perceptibility", ""), m.get("focus_oks", ""), m.get("focus_err_rel", ""),
+                             m.get("focus_visibility", ""), m.get("focus_perceptibility", "")])
 
 
 def write_closed_loop_report(root: Path, pipeline_stats: Optional[dict[str, Any]], reject_totals: dict[str, int],
@@ -102,4 +107,11 @@ def write_closed_loop_report(root: Path, pipeline_stats: Optional[dict[str, Any]
                     rows.append((r["mean_oks"] if r["mean_oks"] is not None else 1.0 - (r["hard_rate"] or 0), key, r))
         for _, key, r in sorted(rows, key=lambda x: x[0])[:25]:
             lines.append(f"| {key} | {r['bin']} | {r['n']} | {r['mean_oks']} | {r['hard_rate']} | {r['drop_rate']} | {r['tilt']} |")
+        focus_rows = [(r["focus_blind_rate"], key, r) for key, d in feedback_report["parameters"].items()
+                      for r in d["rows"] if r["n"] >= 10 and r.get("focus_blind_rate") is not None]
+        if focus_rows:
+            lines += ["", "### Where the aim point (primary keypoint) is missed (bins with >= 10 judged frames, worst first)", "",
+                      "| parameter | bin | frames | aim OKS | aim missed | tilt |", "|---|---|---|---|---|---|"]
+            for _, key, r in sorted(focus_rows, key=lambda x: -x[0])[:25]:
+                lines.append(f"| {key} | {r['bin']} | {r['n']} | {r['mean_focus_oks']} | {r['focus_blind_rate']} | {r['tilt']} |")
     (root / "closed_loop_report.md").write_text("\n".join(lines) + "\n")

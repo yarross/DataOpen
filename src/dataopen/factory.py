@@ -20,7 +20,7 @@ def build_adapter(profile: GameProfile, mailbox: Optional[str] = None, connect: 
         if profile.engine != "mock":
             raise ValueError(f"{profile.id}: no mailbox directory configured (use --mailbox)")
         from .adapters.mock import MockGameAdapter
-        return MockGameAdapter(profile.width, profile.height)
+        return MockGameAdapter(profile.width, profile.height, variant=profile.mock_variant)
     opts = RemoteOptions(capture_mode=profile.capture_mode, image_size=(profile.width, profile.height),
                          bone_map=profile.bone_map, mod_options=profile.mod_options)
     grabber = grabber or MssGrabber(profile.grabber_region)

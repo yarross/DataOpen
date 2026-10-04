@@ -47,6 +47,7 @@ class FeedbackConfig:
     exploit_sigma: float = 0.07
     memory: int = 300
     hard_utility: float = 0.8         # utility at/above which a frame is remembered as an edge case
+    focus_blind_oks: float = 0.15     # a frame whose aim-point OKS is below this counts as "aim point missed" in the stats
     balance: BalanceConfig = field(default_factory=BalanceConfig)   # dataset-level controller (quality/balance.py)
 
 
@@ -80,6 +81,9 @@ class UnitWarp:
         return int(min(max(np.searchsorted(self.base_cum, u, side="right") - 1, 0), len(self.m) - 1))
 
 
+_STAT_FIELDS = ("n", "util", "hard", "drop", "oks", "oks_n", "foc", "foc_n", "foc_blind", "fdiff")
+
+
 class _Stats:
     def __init__(self, n_bins: int) -> None:
         self.n = np.zeros(n_bins)
@@ -88,9 +92,19 @@ class _Stats:
         self.drop = np.zeros(n_bins)
         self.oks = np.zeros(n_bins)
         self.oks_n = np.zeros(n_bins)
+        self.foc = np.zeros(n_bins)           # summed aim-point OKS (frames the model judged)
+        self.foc_n = np.zeros(n_bins)
+        self.foc_blind = np.zeros(n_bins)     # frames where the aim point was missed
+        self.fdiff = np.zeros(n_bins)         # summed static+model aim-point difficulty (kept frames)
 
-    def add(self, b: int, v: QualityVerdict) -> None:
+    def add(self, b: int, v: QualityVerdict, blind_thr: float = 0.15) -> None:
         self.n[b] += 1
+        if not v.tier.is_drop:
+            self.fdiff[b] += v.focus_difficulty
+        if v.metrics.evaluated and v.metrics.focus_evaluated:
+            self.foc[b] += v.metrics.mean_focus_oks
+            self.foc_n[b] += 1
+            self.foc_blind[b] += v.metrics.min_focus_oks < blind_thr
         self.util[b] += v.utility
         self.hard[b] += v.tier in (Tier.KEEP_HARD, Tier.HARD_NEGATIVE)
         self.drop[b] += v.tier.is_drop
@@ -174,7 +188,7 @@ class AdaptiveRandomizer(DomainRandomizationController, IFeedbackController):
             key = f"{group}.{name}"
             w = self._warps.get(key)
             if w is not None:
-                self._stats[key].add(w.bin_of(float(u)), v)
+                self._stats[key].add(w.bin_of(float(u)), v, self.fb.focus_blind_oks)
 
     def observe(self, scene: SceneSpec, frame: FrameSpec, verdict: QualityVerdict) -> None:
         if scene.units:
@@ -228,8 +242,7 @@ class AdaptiveRandomizer(DomainRandomizationController, IFeedbackController):
     def state(self) -> dict[str, Any]:
         return {"version": 1, "n_observed": self.n_observed, "last_update": self.last_update,
                 "tilts": {k: w.t.tolist() for k, w in self._warps.items()},
-                "stats": {k: {f: getattr(s, f).tolist() for f in ("n", "util", "hard", "drop", "oks", "oks_n")}
-                          for k, s in self._stats.items()},
+                "stats": {k: {f: getattr(s, f).tolist() for f in _STAT_FIELDS} for k, s in self._stats.items()},
                 "memory": list(self._memory), "pairs": [list(p) for p in self._pairs], "balance": self.balance.state()}
 
     def load_state(self, state: dict[str, Any]) -> None:
@@ -273,6 +286,9 @@ class AdaptiveRandomizer(DomainRandomizationController, IFeedbackController):
                              "hard_rate": round(st.hard[b] / n, 3) if n else None,
                              "drop_rate": round(st.drop[b] / n, 3) if n else None,
                              "mean_oks": round(st.oks[b] / st.oks_n[b], 3) if st.oks_n[b] else None,
+                             "mean_focus_oks": round(st.foc[b] / st.foc_n[b], 3) if st.foc_n[b] else None,
+                             "focus_blind_rate": round(st.foc_blind[b] / st.foc_n[b], 3) if st.foc_n[b] else None,
+                             "mean_focus_difficulty": round(st.fdiff[b] / max(1.0, st.n[b] - st.drop[b]), 3),
                              "tilt": round(float(self._warps[key].t[b]), 3)})
             params[key] = {"covered_bins": int((st.n > 0).sum()), "bins": len(st.n), "rows": rows}
         pair_cov = None

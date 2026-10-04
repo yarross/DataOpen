@@ -26,6 +26,8 @@ class FeatureConfig:
     size_ref: float = 40.0         # bbox height (px) above which size no longer limits perceptibility
     ring_frac: float = 0.15        # surrounding-ring thickness as a fraction of the larger bbox side
     stride: int = 4                # sub-sampling of the global statistics
+    focus_radius_rel: float = 0.05  # radius of the aim-point patch as a fraction of the person's bbox height
+    focus_size_ref: float = 4.0    # patch radius (px) above which size no longer limits the aim point's perceptibility
 
 
 def _luma(rgb: np.ndarray) -> np.ndarray:
@@ -80,10 +82,48 @@ def _person_difficulty(perceptibility: float, occlusion: float, size_px: float) 
     return float(np.clip(0.45 * (1.0 - perceptibility) + 0.35 * occlusion + 0.20 * small, 0.0, 1.0))
 
 
+def _focus_features(img: np.ndarray, ann: Annotation, schema: SkeletonSchema, cfg: FeatureConfig, pf: PersonFeatures) -> None:
+    """Perceptibility of the schema's primary keypoint(s): a patch around the point against the ring around the patch."""
+    prim = [i for i in schema.primary_idx() if ann.keypoints[i, 2] > 0]
+    if not prim:
+        return
+    h, w, _ = img.shape
+    pf.has_focus = True
+    pf.focus_visibility = float((ann.keypoints[prim, 2] == 2).mean())
+    r = max(2.0, cfg.focus_radius_rel * ann.bbox[3])
+    pf.focus_radius_px = float(r)
+    patches, rings = [], []
+    for i in prim:
+        x, y = ann.keypoints[i, :2]
+        x0, x1, y0, y1 = (int(max(0, x - r)), int(min(w, x + r + 1)), int(max(0, y - r)), int(min(h, y + r + 1)))
+        X0, X1, Y0, Y1 = (int(max(0, x - 2.2 * r)), int(min(w, x + 2.2 * r + 1)),
+                          int(max(0, y - 2.2 * r)), int(min(h, y + 2.2 * r + 1)))
+        if x1 <= x0 or y1 <= y0 or X1 <= X0 or Y1 <= Y0:
+            continue
+        outer = img[Y0:Y1, X0:X1].astype(np.float64)
+        mask = np.ones(outer.shape[:2], dtype=bool)
+        mask[y0 - Y0:y1 - Y0, x0 - X0:x1 - X0] = False
+        if not mask.any():
+            continue
+        patches.append(img[y0:y1, x0:x1].reshape(-1, 3).astype(np.float64).mean(axis=0))
+        rings.append(outer[mask].mean(axis=0))
+    if patches:
+        patch, ring = np.mean(patches, axis=0), np.mean(rings, axis=0)
+        pf.focus_contrast = float(np.linalg.norm(patch - ring) / (255.0 * np.sqrt(3.0)))
+        pf.focus_brightness = float(_luma(patch))
+        c = np.clip(pf.focus_contrast / cfg.contrast_ref, 0.0, 1.0)
+        b = np.clip((pf.focus_brightness - cfg.dark_floor) / (cfg.dark_ref - cfg.dark_floor), 0.0, 1.0)
+        pf.focus_perceptibility = float(c * b * (0.5 + 0.5 * np.clip(r / cfg.focus_size_ref, 0.0, 1.0)))
+    s = float(np.clip(r / cfg.focus_size_ref, 0.0, 1.0))
+    pf.focus_difficulty = float(np.clip(0.45 * (1.0 - pf.focus_perceptibility) + 0.35 * (1.0 - pf.focus_visibility)
+                                        + 0.20 * (1.0 - s), 0.0, 1.0))
+
+
 def person_features(img: np.ndarray, ann: Annotation, schema: SkeletonSchema, cfg: FeatureConfig) -> PersonFeatures:
     kp = ann.keypoints
     pf = PersonFeatures(ann.entity_id, size_px=float(ann.bbox[3]))
     pf.occlusion_index = float(1.0 - (kp[:, 2] == 2).sum() / len(kp))
+    _focus_features(img, ann, schema, cfg, pf)
     limbs = _limb_pixels(img, ann, schema)
     ring = _ring_mean(img, ann.bbox, cfg.ring_frac)
     if len(limbs) == 0 or ring is None:
@@ -105,13 +145,16 @@ def person_features(img: np.ndarray, ann: Annotation, schema: SkeletonSchema, cf
 
 
 def compute_features(img: Optional[np.ndarray], annotations: Sequence[Annotation], entities: Sequence[EntityState],
-                     schema: SkeletonSchema, cfg: Optional[FeatureConfig] = None) -> FrameFeatures:
+                     schema: SkeletonSchema, cfg: Optional[FeatureConfig] = None,
+                     rig_schema: Optional[SkeletonSchema] = None) -> FrameFeatures:
+    """`entities` are as the mod reported them (in `rig_schema`); `annotations` are in the dataset's `schema`."""
     cfg = cfg or FeatureConfig()
     f = FrameFeatures()
     ids = {a.entity_id for a in annotations}
     for e in entities:                                # 3D sanity of the labeled skeletons (needs no pixels)
         if e.entity_id in ids:
-            f.gt_issues += [f"entity {e.entity_id}: {m}" for m in segment_issues(e.skeleton_world, e.joint_valid, schema)]
+            f.gt_issues += [f"entity {e.entity_id}: {m}"
+                            for m in segment_issues(e.skeleton_world, e.joint_valid, rig_schema or schema)]
     if img is None:
         return f
     f.has_pixels = True

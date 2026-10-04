@@ -45,6 +45,10 @@ def coco_dict(records: Iterable[FrameRecord], schema: SkeletonSchema) -> dict:
                  "is_negative": r.kind.value == "negative"}
         q = r.meta.get("quality")
         if q:  # frame difficulty metadata (COCO allows extra fields; ignored by standard loaders)
+            if q.get("focus_oks") is not None:
+                image["focus_oks"] = q["focus_oks"]
+            if q.get("focus_difficulty"):
+                image["focus_difficulty"] = q["focus_difficulty"]
             image.update({"verdict": q.get("verdict"), "tier": q["tier"], "difficulty_score": q["difficulty"],
                           "difficulty": q["difficulty"], "weight": q["weight"],
                           "occlusion_index": q["occlusion_index"], "contrast_rate": q["contrast_rate"]})
@@ -54,10 +58,11 @@ def coco_dict(records: Iterable[FrameRecord], schema: SkeletonSchema) -> dict:
         for a in r.annotations:
             kp = a.keypoints
             extra = {k: a.meta[k] for k in ("oks_score", "oks", "difficulty_score", "occlusion_index", "contrast_rate",
-                                                  "perceptibility") if k in a.meta}
+                                                  "perceptibility", "focus_oks", "focus_err_rel", "focus_difficulty",
+                                                  "focus_visibility", "class_ok") if k in a.meta}
             anns.append({
                 **extra,
-                "id": ann_id, "image_id": img_id, "category_id": 1, "iscrowd": 0,
+                "id": ann_id, "image_id": img_id, "category_id": a.class_id + 1, "iscrowd": 0,
                 "keypoints": [round(float(x), 2) if i % 3 != 2 else int(x) for i, x in enumerate(kp.reshape(-1))],
                 "num_keypoints": a.num_keypoints,
                 "bbox": [round(float(x), 2) for x in a.bbox],
@@ -68,8 +73,9 @@ def coco_dict(records: Iterable[FrameRecord], schema: SkeletonSchema) -> dict:
         "info": {"description": "DataOpen synthetic human pose", "schema": schema.name},
         "images": images,
         "annotations": anns,
-        "categories": [{"id": 1, "name": "person", "supercategory": "person",
-                        "keypoints": list(schema.keypoints), "skeleton": schema.coco_skeleton()}],
+        "categories": [{"id": i + 1, "name": c, "supercategory": "person",
+                        "keypoints": list(schema.keypoints), "skeleton": schema.coco_skeleton()}
+                       for i, c in enumerate(schema.classes)],
     }
 
 
@@ -84,7 +90,7 @@ def yolo_pose_lines(record: FrameRecord) -> list[str]:
     lines = []
     for a in record.annotations:
         x, y, w, h = a.bbox
-        parts = [0, (x + w / 2) / W, (y + h / 2) / H, w / W, h / H]
+        parts = [a.class_id, (x + w / 2) / W, (y + h / 2) / H, w / W, h / H]
         for kx, ky, kv in a.keypoints:
             parts += [kx / W, ky / H, int(kv)]
         lines.append(" ".join(str(p) if isinstance(p, int) else f"{p:.6f}" for p in parts))
@@ -103,5 +109,5 @@ def write_yolo_yaml(root: Path, schema: SkeletonSchema, splits: Iterable[str]) -
     if "val" in splits:
         lines.append("val: images/val")
     lines += [f"kpt_shape: [{schema.num_keypoints}, 3]", f"flip_idx: {schema.flip_idx()}",
-              "names:", "  0: person", ""]
+              "names:", *[f"  {i}: {c}" for i, c in enumerate(schema.classes)], ""]
     (root / "data.yaml").write_text("\n".join(lines), encoding="utf-8")

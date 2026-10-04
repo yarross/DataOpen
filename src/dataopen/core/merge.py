@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Sequence
 
 from .export import CanonicalStore, write_coco, write_yolo_label, write_yolo_yaml
-from .schema import SkeletonSchema
+from .card import schema_from_card_dict
 
 
 class MergeError(RuntimeError):
@@ -30,7 +30,8 @@ def merge_datasets(sources: Sequence[Path], out: Path) -> dict:
         cards.append(json.loads(c.read_text()))
     first = cards[0]
     for s, c in zip(sources[1:], cards[1:]):
-        if c["skeleton"]["keypoints"] != first["skeleton"]["keypoints"]:
+        if (c["skeleton"]["keypoints"] != first["skeleton"]["keypoints"]
+                or c["skeleton"].get("classes", ["person"]) != first["skeleton"].get("classes", ["person"])):
             raise MergeError(f"{s} uses a different skeleton than {sources[0]}")
 
     store = CanonicalStore(out)
@@ -57,8 +58,7 @@ def merge_datasets(sources: Sequence[Path], out: Path) -> dict:
             store.append(split, batch)
 
     sk = first["skeleton"]
-    schema = SkeletonSchema(sk["name"], tuple(sk["keypoints"]), tuple(tuple(e) for e in sk.get("edges", [])),
-                            tuple(tuple(p) for p in sk.get("flip_pairs", [])), tuple(sk.get("sigmas", ())))
+    schema = schema_from_card_dict(sk)
     for split in store.splits():
         write_coco(store.load(split), schema, out / "annotations" / f"coco_{split}.json")
     write_yolo_yaml(out, schema, store.splits())

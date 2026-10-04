@@ -27,6 +27,7 @@ from .annotation import AnnotationBuilder, AnnotationConfig, BuildResult
 from .calibration import ProbeResult, check_probes, diagnose
 from .card import write_dataset_card
 from .export import CanonicalStore, write_coco, write_yolo_label, write_yolo_yaml
+from .derive import SchemaMapping
 from .interfaces import AdapterError, IGameAdapter
 from .models import CaptureRequest, FrameKind, FrameRecord, FrameSnapshot, FrameSpec, SceneSpec
 from .randomization import DomainRandomizationController, IDomainRandomizer, derive_seed
@@ -117,9 +118,12 @@ class DatasetOrchestrator:
         builder: Optional[AnnotationBuilder] = None,
         validators: Optional[Sequence[IFrameValidator]] = None,
         quality: Optional["QualityPipeline"] = None,
+        target: Optional["SchemaMapping"] = None,
     ) -> None:
         self.adapter, self.cfg = adapter, config
-        self.schema = adapter.info.schema
+        # capture schema = what the mod reports; target = what the dataset is labeled with (docs/SCHEMAS.md)
+        self.mapping = target
+        self.schema = target.target if target is not None else adapter.info.schema
         self.randomizer = randomizer or DomainRandomizationController(
             config.seed, adapter.parameter_space())
         self.builder = builder or AnnotationBuilder(self.schema, AnnotationConfig())
@@ -309,7 +313,7 @@ class DatasetOrchestrator:
                 snap = a.capture.capture(CaptureRequest(spec.frame_id, spec, w, h))
                 self._timed("capture", t)
                 try:
-                    res = self._stage_a(spec, snap, scene, fi, kind, rep, records)
+                    res = self._stage_a(spec, snap, scene, fi, kind, rep, records, handles)
                 except BaseException:
                     a.capture.discard(snap)
                     raise
@@ -339,7 +343,7 @@ class DatasetOrchestrator:
                 log.warning("despawn_all failed: %s", e)
 
     def _stage_a(self, spec: FrameSpec, snap: FrameSnapshot, scene: SceneSpec, fi: int, kind: FrameKind,
-                 rep: SessionReport, records: list[FrameRecord]):
+                 rep: SessionReport, records: list[FrameRecord], handles=()):
         """Cheap synchronous checks. Returns a reject reason, a _Pending (quality validation running), or None
         (accepted and committed right away when there is no quality pipeline)."""
         t = time.perf_counter()
@@ -350,6 +354,9 @@ class DatasetOrchestrator:
         probe_err = round(self._last_probe.max_err, 3) if (self._last_probe is not None and snap.probes) else None
 
         t = time.perf_counter()
+        rig_snap = snap                                  # what the mod reported (kept for GT sanity checks)
+        if self.mapping is not None:                     # capture schema -> target schema; entity meta (team, outfit) rides along
+            snap = self.mapping.convert_snapshot(snap, {h.entity_id: h.meta for h in handles})
         built = self.builder.build(snap)
         self._timed("annotate", t)
 
@@ -367,7 +374,7 @@ class DatasetOrchestrator:
         t = time.perf_counter()
         pixels = self.adapter.capture.peek_pixels(snap, self.quality.cfg.max_side)
         self._timed("peek_pixels", t)
-        item = QualityItem(spec.frame_id, built.annotations, snap.entities, kind is FrameKind.NEGATIVE,
+        item = QualityItem(spec.frame_id, built.annotations, rig_snap.entities, kind is FrameKind.NEGATIVE,
                            built.ignored_boxes, pixels, rep.attempts)
         return _Pending(spec, snap, scene, fi, kind, built, self.quality.submit(item), probe_err)
 
@@ -431,7 +438,17 @@ class DatasetOrchestrator:
                     ann.meta.update({"occlusion_index": round(pf.occlusion_index, 4),
                                      "contrast_rate": round(pf.contrast_rate, 4),
                                      "perceptibility": round(pf.perceptibility, 4)})
+                if pf is not None and pf.has_focus:
+                    ann.meta.update({"focus_visibility": round(pf.focus_visibility, 3),
+                                     "focus_perceptibility": round(pf.focus_perceptibility, 4),
+                                     "focus_difficulty": round(pf.focus_difficulty, 4)})
                 if m is not None and verdict.metrics.evaluated:
+                    if m.focus_oks is not None:
+                        ann.meta["focus_oks"] = round(m.focus_oks, 4)
+                    if m.focus_err_rel is not None:
+                        ann.meta["focus_err_rel"] = round(m.focus_err_rel, 4)
+                    if m.class_ok is not None:
+                        ann.meta["class_ok"] = m.class_ok
                     ann.meta["oks"] = ann.meta["oks_score"] = round(m.oks, 4)
                     if diff is not None:
                         diff = 0.5 * diff + 0.5 * (1.0 - m.oks)      # same blend as the frame-level difficulty

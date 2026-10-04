@@ -23,7 +23,26 @@ def _fields(cls) -> set[str]:
     return {f.name for f in dataclasses.fields(cls)}
 
 
-def build_evaluator(spec: dict[str, Any], schema: SkeletonSchema) -> Optional[IModelEvaluator]:
+def _keypoint_map(km: Optional[str], schema: SkeletonSchema, bundle) -> Optional[KeypointMap]:
+    """How the model's keypoints become the dataset's: "identity" (the model emits the target schema) or the name of
+    a model keypoint set ("coco17") that the schema file knows how to map (`[schema.models.coco17]`)."""
+    if km in (None, ""):
+        return None
+    if km == "identity":
+        return KeypointMap.identity(schema.num_keypoints)
+    if km == "coco17" and schema.name == "human13":
+        return KeypointMap.coco17_to_human13()
+    if bundle is not None and km in bundle.model_names():
+        return KeypointMap.from_mapping(bundle.model_mapping(km))
+    avail = ["identity", *(bundle.model_names() if bundle is not None else [])]
+    if km == "coco17" and bundle is None:
+        raise QualityConfigError(f"keypoint_map 'coco17' maps onto the 13-point schema only; for schema {schema.name!r} "
+                                 f"pass a schema file that has [schema.models.coco17] (--schema), or use 'identity' for a "
+                                 f"model trained on this schema")
+    raise QualityConfigError(f"keypoint_map {km!r} is unknown for schema {schema.name!r}; use one of {avail}")
+
+
+def build_evaluator(spec: dict[str, Any], schema: SkeletonSchema, bundle=None) -> Optional[IModelEvaluator]:
     kind = spec.get("evaluator", "none")
     if kind in ("none", "", None):
         return None
@@ -40,18 +59,16 @@ def build_evaluator(spec: dict[str, Any], schema: SkeletonSchema) -> Optional[IM
         if not Path(str(model)).is_file():
             raise QualityConfigError(f"model file not found: {model}")
         size = spec.get("input_size", [640, 640])
-        km = spec.get("keypoint_map", "coco17" if spec.get("format", "yolov8_pose") == "yolov8_pose" else None)
-        kmap = {"coco17": KeypointMap.coco17_to_human13, "identity": lambda: KeypointMap.identity(schema.num_keypoints),
-                None: lambda: None}.get(km)
-        if kmap is None:
-            raise QualityConfigError("keypoint_map must be 'coco17' (17-point COCO model -> 13 points) or 'identity'")
-        if km == "coco17" and schema.num_keypoints != 13:
-            raise QualityConfigError("keypoint_map 'coco17' maps onto the 13-point schema; use 'identity' for a model "
-                                     "trained on your own keypoints")
+        fmt = spec.get("format", "yolov8_pose")
+        km = spec.get("keypoint_map", {"yolov8_pose": "coco17", "table": "identity"}.get(fmt))
+        kmap = _keypoint_map(km, schema, bundle)
         try:
-            return OnnxEvaluator(str(model), spec.get("format", "yolov8_pose"), (int(size[0]), int(size[1])),
+            return OnnxEvaluator(str(model), fmt, (int(size[0]), int(size[1])),
                                  spec.get("device", "cpu"), float(spec.get("conf_thr", 0.05)),
-                                 float(spec.get("iou_thr", 0.7)), kmap())
+                                 float(spec.get("iou_thr", 0.7)), kmap, layout=spec.get("layout"),
+                                 coords=spec.get("coords", "pixels"), class_map=spec.get("class_map"),
+                                 input_dtype=spec.get("input_dtype", "auto"), input_layout=spec.get("input_layout", "auto"),
+                                 max_det=int(spec.get("max_det", 20)), nms=bool(spec.get("nms", False)))
         except ImportError as e:
             raise QualityConfigError(f"onnxruntime is not installed: pip install 'dataopen[quality]' ({e})") from e
         except ValueError:
@@ -61,15 +78,17 @@ def build_evaluator(spec: dict[str, Any], schema: SkeletonSchema) -> Optional[IM
     raise QualityConfigError(f"unknown evaluator {kind!r}; use 'onnx', 'simulated' or 'none'")
 
 
-def build_quality(spec: dict[str, Any], schema: SkeletonSchema) -> Optional[QualityPipeline]:
-    """None when the section is absent or `enabled = false`. `evaluator = "none"` still gives the cheap gates."""
+def build_quality(spec: dict[str, Any], schema: SkeletonSchema, rig_schema: Optional[SkeletonSchema] = None,
+                  bundle=None) -> Optional[QualityPipeline]:
+    """None when the section is absent or `enabled = false`. `evaluator = "none"` still gives the cheap gates.
+    `schema` = the dataset's (target) keypoints; `rig_schema` = what the mod reports (3D sanity runs on it)."""
     if not spec or not spec.get("enabled", False):
         return None
     cfg_kw = {k: v for k, v in spec.items() if k in _fields(QualityConfig) and k not in ("policy", "features", "enabled")}
     policy = PolicyConfig(**{k: v for k, v in (spec.get("policy") or {}).items() if k in _fields(PolicyConfig)})
     features = FeatureConfig(**{k: v for k, v in (spec.get("features") or {}).items() if k in _fields(FeatureConfig)})
     cfg = QualityConfig(policy=policy, features=features, **cfg_kw)
-    return QualityPipeline(schema, build_evaluator(spec, schema), cfg)
+    return QualityPipeline(schema, build_evaluator(spec, schema, bundle), cfg, rig_schema=rig_schema)
 
 
 def build_randomizer(adapter: IGameAdapter, seed: int, adaptive: bool, feedback: Optional[dict[str, Any]] = None,

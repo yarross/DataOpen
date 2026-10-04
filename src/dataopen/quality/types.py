@@ -15,6 +15,8 @@ class Prediction:
     bbox: tuple[float, float, float, float]       # x, y, w, h
     score: float
     keypoints: Optional[np.ndarray] = None        # (K, 3): x, y, confidence; None for box-only models (D-FINE)
+    class_id: Optional[int] = None                # index into SkeletonSchema.classes; None = the model has no such classes
+    visibility: Optional[np.ndarray] = None       # (K,) the model's own visibility mask / probability (>0.5 = visible)
 
 
 class Verdict(str, Enum):
@@ -60,6 +62,14 @@ class MatchedPerson:
     iou: float = 0.0
     score: float = 0.0
     keypoint_conf_mean: float = 0.0
+    # focus = the schema's primary keypoint(s), e.g. the aim point (None = this person has no labeled primary point)
+    focus_oks: Optional[float] = None
+    focus_conf: Optional[float] = None
+    focus_err_rel: Optional[float] = None    # pixel error of the primary point / person height (None = no prediction)
+    focus_hit: Optional[bool] = None         # that error is within the hit radius
+    class_ok: Optional[bool] = None          # the model's class equals the labeled class (None = not evaluated)
+    vis_acc: Optional[float] = None          # agreement of the model's visibility mask with the labels
+    kp_sim: Optional[list] = None            # per-keypoint similarity exp(-d^2/2sk^2s) (None entries = unlabeled)
 
 
 @dataclass
@@ -79,6 +89,12 @@ class QualityMetrics:
     mean_iou: float = 0.0
     mean_conf: float = 0.0
     max_disagreement_score: float = 0.0  # highest-confidence prediction that overlaps a GT box but disagrees on keypoints
+    focus_evaluated: bool = False        # at least one labeled person has a labeled primary keypoint
+    mean_focus_oks: float = 0.0
+    min_focus_oks: float = 0.0
+    focus_hit_rate: float = 0.0          # share of those persons whose primary point is within the hit radius
+    class_accuracy: Optional[float] = None
+    mean_vis_acc: Optional[float] = None
     persons: list[MatchedPerson] = field(default_factory=list)
 
     @classmethod
@@ -102,6 +118,14 @@ class PersonFeatures:
     sharpness: float = 0.0            # local Laplacian variance (blur / fog lowers it)
     perceptibility: float = 0.0       # 0..1: can a model reasonably see this person? (contrast x brightness x size)
     limiting_factor: str = ""         # "contrast" | "brightness" | "size": what limits perceptibility most
+    # the schema's primary keypoint(s) (the aim point): how well can THAT region be seen?
+    has_focus: bool = False           # this person has a labeled primary keypoint
+    focus_visibility: float = 0.0     # share of the labeled primary keypoints with v == 2
+    focus_contrast: float = 0.0       # colour distance of the patch around the aim point vs. its surroundings (0..1)
+    focus_brightness: float = 0.0
+    focus_radius_px: float = 0.0      # radius of the patch, i.e. how big the aim region is on screen
+    focus_perceptibility: float = 0.0
+    focus_difficulty: float = 0.0     # 0..1 static difficulty of the aim point alone (no model)
     difficulty: float = 0.0           # 0..1 static difficulty of this person alone (no model)
 
 
@@ -119,6 +143,14 @@ class FrameFeatures:
     @property
     def min_perceptibility(self) -> float:
         return min((p.perceptibility for p in self.persons), default=1.0)
+
+    @property
+    def has_focus(self) -> bool:
+        return any(p.has_focus for p in self.persons)
+
+    @property
+    def focus_difficulty(self) -> float:
+        return max((p.focus_difficulty for p in self.persons if p.has_focus), default=0.0)
 
     @property
     def mean_occlusion(self) -> float:
@@ -154,6 +186,8 @@ class QualityVerdict:
     metrics: QualityMetrics
     features: FrameFeatures
     policy_version: int = 0            # which rule set produced this verdict (rules can change mid-run)
+    focus_difficulty: float = 0.0      # difficulty of the aim point alone (static, blended with the model's trouble)
+    focus_oks: Optional[float] = None  # mean OKS of the primary keypoint(s) (None = no model / no primary point)
 
     @property
     def verdict(self) -> Verdict:
@@ -161,6 +195,8 @@ class QualityVerdict:
 
     def to_dict(self) -> dict[str, Any]:
         return {"verdict": self.verdict.value, "policy_version": self.policy_version,
+                "focus_difficulty": round(self.focus_difficulty, 4),
+                "focus_oks": None if self.focus_oks is None else round(self.focus_oks, 4),
                 "tier": self.tier.value, "reasons": self.reasons, "difficulty": round(self.difficulty, 4),
                 "occlusion_index": round(self.occlusion_index, 4), "contrast_rate": round(self.contrast_rate, 4),
                 "weight": round(self.weight, 3), "utility": round(self.utility, 3),

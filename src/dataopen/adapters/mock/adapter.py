@@ -52,7 +52,8 @@ _NAMES = {
 
 
 class _World:
-    def __init__(self) -> None:
+    def __init__(self, variant: str = "") -> None:
+        self.variant = variant                 # "" | "shooter": team classes, headgear, camouflage, smoke, flashes, cover
         self.env: dict[str, Any] = {}
         self.actors: dict[int, dict[str, Any]] = {}
         self.active = True
@@ -147,7 +148,7 @@ class _Extractor(ISkeletonExtractor):
             bones = _pose_bones(h.rig_id, a, a.get("frame", {}))
             pos, valid = self.mapping_for(h.rig_id).resolve(self._schema, bones)
             hull = np.array(list(bones.values()))
-            hull = np.vstack([hull + [dx, dy, dz] for dx in (-.12, .12) for dy in (-.12, .12) for dz in (-.1, .1)])
+            hull = np.vstack([hull + [dx, dy, dz] for dx in (-.12, .12) for dy in (-.12, .12) for dz in (-.1, .17 if self.w.variant == "shooter" else .1)])
             out.append(EntityState(h.entity_id, h.rig_id, pos, valid, hull_points_world=hull, meta=dict(h.meta)))
         return out
 
@@ -187,14 +188,22 @@ class _Bridge(ICaptureBridge):
         if not w.actors:
             raise AdapterError("no actors spawned")
         w.tick += 1  # real adapters: step N fixed ticks, wait for end-of-frame
+        self._tid = min(spec.camera.target_index, len(w.actors) - 1)       # the actor smoke / flash is centred on
         cam = self._camera(spec.camera, req)
-        entities = self.ext.extract([EntityHandle(i, a["rig"], {"outfit": a.get("outfit", "casual")})
-                                     for i, a in w.actors.items()]) if w.active else []
-        # NOTE: handles above lose appearance meta; fine for the mock.
+        def meta_of(a):
+            m = {"outfit": a.get("outfit", "casual")}
+            if w.variant == "shooter":
+                m.update({k: a[k] for k in ("team", "headgear", "camo") if k in a})
+            return m
+
+        entities = self.ext.extract([EntityHandle(i, a["rig"], meta_of(a)) for i, a in w.actors.items()]) if w.active else []
 
         rng = np.random.default_rng(derive_seed(spec.seed, "mock-wall"))
         wall = None
-        if entities and rng.random() < 0.4:  # camera-aligned wall between camera and target
+        cover = self._head_cover_wall(cam, spec, entities) if (w.variant == "shooter" and entities) else None
+        if cover is not None:
+            wall = cover
+        elif entities and rng.random() < 0.4:  # camera-aligned wall between camera and target
             dist = spec.camera.distance * rng.uniform(0.4, 0.8)
             wall = (dist, rng.uniform(-0.6, 0.6), rng.uniform(0.0, 0.8), rng.uniform(0.3, 0.9), rng.uniform(0.3, 0.9))
         depth = self._depth(cam, wall)
@@ -204,6 +213,29 @@ class _Bridge(ICaptureBridge):
         thumb = gray[: gray.shape[0] // 8 * 8, : gray.shape[1] // 9 * 9]
         thumb = thumb.reshape(8, thumb.shape[0] // 8, 9, thumb.shape[1] // 9).mean(axis=(1, 3))
         return FrameSnapshot(req.frame_id, w.tick, cam, entities, depth, thumb, meta={"wall": wall, "colors": colors})
+
+    HEAD_R = 0.11     # head radius in meters (the shooter schema's head_top sits 0.12 m above the head bone)
+
+    def _head_cover_wall(self, cam: CameraModel, spec: FrameSpec, ents):
+        """Cover in front of the target: its top edge cuts through the head (peeking over a wall); None = no cover."""
+        from ...core.projection import project
+        tgt_id = min(spec.camera.target_index, len(self.w.actors) - 1)
+        fp = self.w.actors.get(tgt_id, {}).get("frame", {})
+        c = float(fp.get("head_cover", 0.0))
+        ent = next((e for e in ents if e.entity_id == tgt_id), None)
+        if c < 0.05 or ent is None:
+            return None
+        uv, z = project(ent.skeleton_world[[0]], cam)          # the head joint
+        zc = float(z[0])
+        if zc <= cam.near:
+            return None
+        r_px = self.HEAD_R * cam.fx / zc
+        v_top = float(uv[0, 1]) + r_px * (1.0 - 2.0 * min(c, 1.0))     # c = 0 just below the head, 1 = head fully hidden
+        dist = zc * 0.7
+        r_m = r_px / cam.fx * dist                            # head radius at the cover's distance, in meters
+        top_m = (v_top - cam.cy) / cam.fy * dist
+        hh = 1.5 * r_m                                        # a small occluder (post, corner), not a full wall
+        return (dist, (float(uv[0, 0]) - cam.cx) / cam.fx * dist, top_m + hh, 3.0 * r_m, hh)
 
     def _depth(self, cam: CameraModel, wall) -> np.ndarray:
         h, wd = cam.height // 2, cam.width // 2  # depth rendered at half resolution
@@ -222,6 +254,52 @@ class _Bridge(ICaptureBridge):
     # so night makes people dark and fog makes them blend into the haze (this is what the closed loop has to detect).
     OUTFITS = {"casual": (200, 60, 60), "uniform": (60, 70, 200), "armor": (115, 115, 120)}
 
+    TEAM_TINT = {"ct": (0.55, 0.75, 1.3), "t": (1.3, 1.0, 0.55)}
+    SKIN = (215, 170, 140)
+    GEAR = {"helmet": (70, 80, 70), "balaclava": (25, 25, 28)}
+
+    def _draw_head(self, img, cam, uv, z, meta, lit, camo, limb_col) -> None:
+        """Head as a disc (radius HEAD_R) with optional headgear; camouflage pulls it toward the limb colour."""
+        H, W, _ = img.shape
+        r = max(1.5, self.HEAD_R * cam.fx / z)
+        gear = meta.get("headgear", "none")
+        yy, xx = np.ogrid[:H, :W]
+        d2 = (xx - uv[0]) ** 2 + (yy - uv[1]) ** 2
+        skin = (1 - camo) * lit(self.SKIN) + camo * np.asarray(limb_col)
+        img[d2 <= r * r] = np.clip(skin, 0, 255).astype(np.uint8)
+        if gear in self.GEAR:
+            gc = (1 - 0.8 * camo) * lit(self.GEAR[gear]) + 0.8 * camo * np.asarray(limb_col)
+            img[d2 <= (1.12 * r) ** 2] = np.clip(gc, 0, 255).astype(np.uint8)
+            if gear == "helmet":                   # a visor band of skin
+                band = (d2 <= (1.0 * r) ** 2) & (yy > uv[1] - 0.1 * r) & (yy < uv[1] + 0.45 * r)
+                img[band] = np.clip(skin, 0, 255).astype(np.uint8)
+        elif gear == "cap":
+            top = (d2 <= (1.05 * r) ** 2) & (yy < uv[1] - 0.2 * r)
+            img[top] = np.clip((1 - 0.8 * camo) * lit(np.asarray(limb_col) * 0.8) + 0.8 * camo * np.asarray(limb_col), 0,
+                               255).astype(np.uint8)
+
+    def _smoke_and_flash(self, img, cam, ents, lit) -> None:
+        """Smoke grenade around the target's torso and a muzzle/flashbang flash on the target's head."""
+        from ...core.projection import project
+        env = self.w.env
+        smoke, flash = float(env.get("smoke_density", 0.0)), float(env.get("flash_intensity", 0.0))
+        tgt = next((e for e in ents if e.entity_id == getattr(self, "_tid", -1)), ents[0] if ents else None)
+        if tgt is None or (smoke < 0.02 and flash < 0.02):
+            return
+        uv, z = project(tgt.skeleton_world, cam)
+        H, W, _ = img.shape
+        yy, xx = np.ogrid[:H, :W]
+        height_px = max(8.0, float(abs(uv[0, 1] - uv[[11, 12], 1].mean())) * 1.4) if len(uv) > 12 else 40.0
+        if smoke >= 0.02:
+            cu, cv = (uv[0] + uv[8]) / 2.0                    # between head and pelvis
+            a = 0.95 * smoke * np.exp(-((xx - cu) ** 2 + (yy - cv) ** 2) / (2 * (0.45 * height_px) ** 2))
+            haze = lit((172, 172, 178))
+            img[:] = np.clip(img * (1 - a[..., None]) + haze * a[..., None], 0, 255).astype(np.uint8)
+        if flash >= 0.02 and np.isfinite(uv[0]).all():
+            r_px = max(1.5, self.HEAD_R * cam.fx / max(z[0], 1e-3))
+            a = flash * np.exp(-((xx - uv[0, 0]) ** 2 + (yy - uv[0, 1]) ** 2) / (2 * (2.4 * r_px + 2) ** 2))
+            img[:] = np.clip(img * (1 - a[..., None]) + 255.0 * a[..., None], 0, 255).astype(np.uint8)
+
     def _render(self, cam: CameraModel, ents, wall, depth):
         from ...core.projection import project
         from ...core.viz import _line
@@ -239,11 +317,20 @@ class _Bridge(ICaptureBridge):
         img = np.clip(lit(np.concatenate([sky, ground])[:, None, :].repeat(W, axis=1)), 0, 255).astype(np.uint8)
         colors = {}
         schema = self.ext.schema
+        shooter = self.w.variant == "shooter"
         for e in ents:
             uv, z = project(e.skeleton_world, cam)
-            col = tuple(int(v) for v in lit(self.OUTFITS.get(e.meta.get("outfit", "casual"), self.OUTFITS["casual"])))
-            colors[e.entity_id] = col
+            base = np.asarray(self.OUTFITS.get(e.meta.get("outfit", "casual"), self.OUTFITS["casual"]), dtype=float)
+            if shooter:
+                base = np.clip(base * self.TEAM_TINT.get(e.meta.get("team", "ct"), (1, 1, 1)), 0, 255)
             ok = (z > cam.near) & (uv[:, 0] >= 2) & (uv[:, 0] < W - 2) & (uv[:, 1] >= 2) & (uv[:, 1] < H - 2)
+            camo = float(e.meta.get("camo", 0.0)) if shooter else 0.0
+            col_f = lit(base)
+            if camo > 0 and ok.any():               # camouflage: the colours drift toward the local background
+                cu, cv = uv[ok].mean(axis=0)
+                col_f = (1 - 0.9 * camo) * col_f + 0.9 * camo * img[int(cv), int(cu)].astype(float)
+            col = tuple(int(v) for v in col_f)
+            colors[e.entity_id] = col
             for a, b in schema.edges:
                 ia, ib = schema.index(a), schema.index(b)
                 if ok[ia] and ok[ib]:
@@ -251,6 +338,10 @@ class _Bridge(ICaptureBridge):
             for (u, v), good in zip(uv, ok):
                 if good:
                     img[int(v) - 2:int(v) + 3, int(u) - 2:int(u) + 3] = col
+            if shooter and ok[0]:
+                self._draw_head(img, cam, uv[0], float(z[0]), e.meta, lit, camo, col_f)
+        if shooter:
+            self._smoke_and_flash(img, cam, ents, lit)
         if wall is not None:
             big = np.repeat(np.repeat(np.isfinite(depth), 2, axis=0), 2, axis=1)[:H, :W]
             img[big] = (60, 60, 70)
@@ -269,8 +360,11 @@ class _Bridge(ICaptureBridge):
 
 
 class MockGameAdapter(IGameAdapter):
-    def __init__(self, width: int = 320, height: int = 240, schema: SkeletonSchema = HUMAN_13) -> None:
-        self._world = _World()
+    def __init__(self, width: int = 320, height: int = 240, schema: SkeletonSchema = HUMAN_13,
+                 variant: str = "") -> None:
+        if variant not in ("", "shooter"):
+            raise ValueError("variant must be '' or 'shooter'")
+        self._world = _World(variant)
         self._info = AdapterInfo("mock", "mock", schema, frozenset({Capability.DEPTH, Capability.HULL_POINTS}),
                                  (width, height))
         self._spawner = _Spawner(self._world)
@@ -285,6 +379,24 @@ class MockGameAdapter(IGameAdapter):
     capture = property(lambda self: self._capture)
 
     def parameter_space(self) -> AdapterParameterSpace:
+        if self._world.variant == "shooter":
+            return AdapterParameterSpace(
+                environment=ParameterSpace({"smoke_density": Uniform(0.0, 1.0), "flash_intensity": Uniform(0.0, 1.0)}),
+                actor=ParameterSpace({
+                    "rig": Categorical(("mock_a", "mock_b")),
+                    "height_scale": Uniform(0.9, 1.1),
+                    "outfit": Categorical(("casual", "armor", "uniform")),
+                    "weapon": Categorical(("none", "rifle", "pistol", "bat")),
+                    "team": Categorical(("ct", "t")),
+                    "headgear": Categorical(("none", "cap", "helmet", "balaclava")),
+                    "camo": Uniform(0.0, 1.0),
+                }),
+                actor_frame=ParameterSpace({
+                    "animation": Categorical(("stand", "walk", "crouch"), (0.4, 0.4, 0.2)),
+                    "phase": Uniform(0.0, 1.0),
+                    "head_cover": Uniform(0.0, 1.0),
+                }),
+            )
         return AdapterParameterSpace(
             actor=ParameterSpace({
                 "rig": Categorical(("mock_a", "mock_b")),

@@ -16,7 +16,9 @@ from .schema import SkeletonSchema
 class Verdict(str, Enum):
     ACCEPT = "accept"
     ABSENT = "absent"              # nothing of this entity is visible in the image: not annotated, fine
-    IGNORE_TOO_SMALL = "ignore_too_small"            # visible but too small to label reliably
+    NEGLIGIBLE = "negligible"                        # a few pixels tall: below any detector's resolution, ignored
+                                                     # without rejecting the frame
+    IGNORE_TOO_SMALL = "ignore_too_small"            # visible, too small to label reliably but too big to ignore
     IGNORE_TOO_OCCLUDED = "ignore_too_occluded"      # a few joints visible only
     IGNORE_BAD_BBOX = "ignore_bad_bbox"              # degenerate / absurd aspect ratio
 
@@ -24,7 +26,9 @@ class Verdict(str, Enum):
 @dataclass
 class AnnotationConfig:
     bbox_padding: float = 0.08           # fraction of bbox size, used when no hull points
-    min_bbox_px: float = 12.0            # min bbox width and height
+    min_bbox_height_px: float = 24.0     # smaller (but not negligible) visible persons reject the frame
+    min_bbox_width_px: float = 8.0
+    negligible_height_px: float = 12.0   # visible persons shorter than this are simply not annotated
     min_visible_keypoints: int = 4       # joints with v == 2
     max_aspect: float = 8.0
     bbox_include_occluded: bool = True   # amodal-in-frame bbox vs visible-only
@@ -70,7 +74,9 @@ class AnnotationBuilder:
         if bbox is None:
             return None, Verdict.IGNORE_BAD_BBOX
         x, y, w, h = bbox
-        if w < cfg.min_bbox_px or h < cfg.min_bbox_px:
+        if h < cfg.negligible_height_px:
+            return None, Verdict.NEGLIGIBLE
+        if h < cfg.min_bbox_height_px or w < cfg.min_bbox_width_px:
             return None, Verdict.IGNORE_TOO_SMALL
         if max(w / h, h / w) > cfg.max_aspect:
             return None, Verdict.IGNORE_BAD_BBOX

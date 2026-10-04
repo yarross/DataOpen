@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
+using System.Threading;
 
 namespace DataOpen
 {
@@ -68,8 +69,22 @@ namespace DataOpen
             }
             string tmp = resPath + ".tmp";
             File.WriteAllText(tmp, text, new UTF8Encoding(false));
-            if (File.Exists(resPath)) File.Delete(resPath);
-            File.Move(tmp, resPath);
+            // Windows: replacing the file fails while the core has it open for reading. Retry for ~1.5 s.
+            for (int attempt = 0; ; attempt++)
+            {
+                try
+                {
+                    if (File.Exists(resPath)) File.Delete(resPath);
+                    File.Move(tmp, resPath);
+                    return;
+                }
+                catch (Exception e)
+                {
+                    if (!(e is IOException) && !(e is UnauthorizedAccessException)) throw;
+                    if (attempt >= 300) throw;
+                    Thread.Sleep(5);
+                }
+            }
         }
     }
 }

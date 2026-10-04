@@ -159,3 +159,53 @@ def test_duplicate_filter_catches_repeated_state_and_stale_pixels():
     s4.thumbnail = s3.thumbnail.copy()                                    # stale readback: pixels unchanged
     g = DuplicateFilter(image_hash=True)
     assert g.check(spec2, s3, None) is None and g.check(spec2, s4, None) == "duplicate_image"
+
+
+def _person_snapshot(height_px: float, width_px: float = None):
+    """A standing person whose projected height is ~height_px, centred in a 640x480 frame."""
+    import numpy as np
+    from dataopen.core.models import CameraModel, EntityState, FrameSnapshot
+    from dataopen.core.schema import HUMAN_13
+    # camera at origin looking down +x (Z up); f for vfov 60 at 480px: 415.7 px
+    R = np.array([[0, -1, 0], [0, 0, -1], [1, 0, 0]], dtype=float)
+    M = np.eye(4)
+    M[:3, :3] = R
+    cam = CameraModel.from_vertical_fov(640, 480, 60.0, M)
+    dist = 415.7 * 1.8 / height_px                      # 1.8 m tall person
+    pos = {"head": (0, 0, 1.7), "neck": (0, 0, 1.5), "l_shoulder": (0, 0.2, 1.45), "r_shoulder": (0, -0.2, 1.45),
+           "pelvis": (0, 0, 0.95), "l_elbow": (0, 0.3, 1.2), "r_elbow": (0, -0.3, 1.2), "l_wrist": (0, 0.3, 0.9),
+           "r_wrist": (0, -0.3, 0.9), "l_knee": (0, 0.1, 0.5), "r_knee": (0, -0.1, 0.5), "l_ankle": (0, 0.1, 0.05),
+           "r_ankle": (0, -0.1, 0.05)}
+    sk = np.array([pos[k] for k in HUMAN_13.keypoints], dtype=float) + [dist, 0, -0.9]
+    return FrameSnapshot("t", 0, cam, [EntityState(0, "r", sk, np.ones(13, bool))])
+
+
+def test_person_size_policy_negligible_small_and_labeled():
+    from dataopen.core.annotation import AnnotationBuilder, Verdict
+    from dataopen.core.schema import HUMAN_13
+    b = AnnotationBuilder(HUMAN_13)
+    verdict = lambda h: next(iter(b.build(_person_snapshot(h)).verdicts.values()))     # noqa: E731
+    assert verdict(8) is Verdict.NEGLIGIBLE                    # tiny: ignored, does not reject the frame
+    assert verdict(18) is Verdict.IGNORE_TOO_SMALL             # visible but unreliable: rejects the frame
+    assert verdict(60) is Verdict.ACCEPT
+
+
+def test_negligible_person_does_not_reject_positive_frames_but_does_reject_negatives():
+    from dataopen.core.annotation import AnnotationBuilder
+    from dataopen.core.models import CameraSpec, FrameKind, FrameSpec
+    from dataopen.core.schema import HUMAN_13
+    from dataopen.core.validation import NegativeFrameValidator, PositiveFrameValidator
+    b = AnnotationBuilder(HUMAN_13)
+    snap_far = _person_snapshot(8)
+    built = b.build(snap_far)
+    pos_spec = FrameSpec(0, 0, 0, FrameKind.POSITIVE, CameraSpec(), [])
+    neg_spec = FrameSpec(0, 0, 0, FrameKind.NEGATIVE, CameraSpec(), [])
+    assert PositiveFrameValidator().check(pos_spec, snap_far, built) == "positive_without_annotations"
+    assert NegativeFrameValidator().check(neg_spec, snap_far, built) == "negative_contains_person"   # still a person
+    # a good person plus a negligible one: the frame is kept
+    near = _person_snapshot(80)
+    far = _person_snapshot(8)
+    far.entities[0].entity_id = 1
+    near.entities.append(far.entities[0])
+    built2 = b.build(near)
+    assert len(built2.annotations) == 1 and PositiveFrameValidator().check(pos_spec, near, built2) is None

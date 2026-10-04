@@ -9,6 +9,8 @@
   dataopen merge   OUT SRC1 SRC2 ...               merge shards
   dataopen install --game gmod|valheim|rust --dir GAME_DIR   install the in-game mod
   dataopen serve-mock --mailbox DIR                a fake game that speaks the protocol (try everything offline)
+  dataopen detector train|eval|export|calib|quantize|bench   the NPU keypoint detector (docs/DETECTOR.md)
+  dataopen agreement A.json B.json                 IoU agreement between two annotation files
 """
 from __future__ import annotations
 
@@ -303,7 +305,7 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--no-doctor", action="store_true", help="skip the pre-flight integration check")
     q = c.add_argument_group("closed-loop quality validation (docs/QUALITY.md)")
     q.add_argument("--quality-model", help="ONNX model (YOLOv8-pose or D-FINE): validate every frame in memory")
-    q.add_argument("--quality-format", choices=["yolov8_pose", "dfine"])
+    q.add_argument("--quality-format", choices=["yolov8_pose", "dfine", "table", "apollo"])
     q.add_argument("--quality-device", choices=["cpu", "cuda", "tensorrt", "directml"])
     q.add_argument("--quality-sim", action="store_true", help="simulated detector (test double; peeks at the labels)")
     q.add_argument("--quality-static", action="store_true", help="cheap gates only: no model")
@@ -358,6 +360,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--mailbox", required=True)
     s.add_argument("--option", action="append", help="e.g. flip_probe_y, unit_scale=100, swap_lr, engine_images=false")
     s.set_defaults(fn=_cmd_serve_mock)
+
+    from .detector.cli import register as register_detector
+    register_detector(sub)
     return p
 
 

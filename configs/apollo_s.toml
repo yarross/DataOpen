@@ -1,0 +1,41 @@
+# ApolloNet-Pose "s" (~2.3 GMACs at 640x640): the accuracy candidate. Train from `dataopen collect` datasets:
+#   dataopen detector train --config configs/apollo_s.toml --data runs/a runs/b --out runs/apollo_s
+[model]
+variant = "s"
+
+[train]
+epochs = 120
+batch_size = 64            # per device; lr below is for 64
+imgsz = 640
+lr = 2e-3                  # AdamW peak; linear warm-up then cosine annealing to lr * min_lr_ratio
+min_lr_ratio = 0.01
+weight_decay = 0.025       # not applied to BatchNorm / bias
+warmup_epochs = 3
+ema_decay = 0.9998
+amp = true                 # bf16 where supported, otherwise fp16
+workers = 8
+eval_every = 2
+
+# augmentation
+mosaic = 1.0
+mixup = 0.1
+close_mosaic_epochs = 15   # the last epochs train on un-mosaiced frames (matches deployment)
+hsv_h = 0.015
+hsv_s = 0.7
+hsv_v = 0.4
+flip = 0.5                 # keypoints swap through the schema's flip_idx
+scale = 0.5
+translate = 0.1
+degrees = 4.0
+smoke_flash = 0.2          # photometric smoke / flash overlays (labels unchanged)
+hard_sampling = 1.0        # image sampling weight = closed-loop `weight` ** hard_sampling (hard frames are seen more often)
+
+# loss
+w_cls = 1.0
+w_box = 7.5
+w_kp = 12.0
+w_kp_score = 1.0
+w_vis = 1.0
+w_heat = 2.0
+tal_topk_o2m = 10          # one-to-many head: top-10 anchors per object
+tal_topk_o2o = 1           # one-to-one head: top-1 anchor per object (this is the head that ships; no NMS)

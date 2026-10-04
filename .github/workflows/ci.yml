@@ -22,3 +22,19 @@ jobs:
         run: ruff check src tests
       - name: Tests (core, protocol, Lua on 5.1/5.4/LuaJIT, GMod host stub, C# syntax)
         run: python -m pytest -q
+
+  detector:
+    # the NPU keypoint detector (PyTorch, CPU wheels): model, losses, a real tiny training run, ONNX export, INT8 PTQ, C post-processor
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e '.[dev,capture,train]'
+      - name: Detector tests
+        run: python -m pytest -q tests/test_detector_host.py tests/test_detector_torch.py

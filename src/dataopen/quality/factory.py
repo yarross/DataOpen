@@ -60,18 +60,23 @@ def build_evaluator(spec: dict[str, Any], schema: SkeletonSchema, bundle=None) -
             raise QualityConfigError(f"model file not found: {model}")
         size = spec.get("input_size", [640, 640])
         fmt = spec.get("format", "yolov8_pose")
-        km = spec.get("keypoint_map", {"yolov8_pose": "coco17", "table": "identity"}.get(fmt))
-        kmap = _keypoint_map(km, schema, bundle)
+        km = spec.get("keypoint_map", {"yolov8_pose": "coco17", "table": "identity", "apollo": "identity"}.get(fmt))
+        kmap = _keypoint_map(km, schema, bundle) if fmt != "apollo" else None
         try:
-            return OnnxEvaluator(str(model), fmt, (int(size[0]), int(size[1])),
+            ev = OnnxEvaluator(str(model), fmt, (int(size[0]), int(size[1])),
                                  spec.get("device", "cpu"), float(spec.get("conf_thr", 0.05)),
                                  float(spec.get("iou_thr", 0.7)), kmap, layout=spec.get("layout"),
                                  coords=spec.get("coords", "pixels"), class_map=spec.get("class_map"),
                                  input_dtype=spec.get("input_dtype", "auto"), input_layout=spec.get("input_layout", "auto"),
                                  max_det=int(spec.get("max_det", 20)), nms=bool(spec.get("nms", False)))
+            lay = getattr(ev, "apollo_layout", None)
+            if lay is not None and lay.keypoints and tuple(lay.keypoints) != tuple(schema.keypoints):
+                raise QualityConfigError(f"{model} was trained for the keypoints {list(lay.keypoints)}, but this run is labeled "
+                                         f"with {list(schema.keypoints)}: pass the matching --schema")
+            return ev
         except ImportError as e:
             raise QualityConfigError(f"onnxruntime is not installed: pip install 'dataopen[quality]' ({e})") from e
-        except ValueError:
+        except (ValueError, QualityConfigError):
             raise
         except Exception as e:                       # onnxruntime raises its own exception types for bad models
             raise QualityConfigError(f"cannot load {model}: {e}") from e

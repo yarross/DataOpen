@@ -17,6 +17,9 @@ def _make_backend(a):
         return ScriptedBackend(latency_ms=a.mock_latency_ms, jitter_ms=a.mock_jitter_ms)
     if not a.model:
         raise SystemExit("--model is required for this backend")
+    from pathlib import Path
+    if not Path(a.model).is_file():
+        raise SystemExit(f"model file not found: {a.model}")
     if kind == "ort":
         b = OrtBackend(a.model, a.provider, a.conf, post=a.post, threads=a.threads)
         if a.fallback_model:

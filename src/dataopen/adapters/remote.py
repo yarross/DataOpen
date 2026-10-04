@@ -10,6 +10,7 @@ of two places:
 """
 from __future__ import annotations
 
+import shutil
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -162,13 +163,19 @@ class _Bridge(ICaptureBridge):
             write_image(dest, img)
             return
         dest.parent.mkdir(parents=True, exist_ok=True)
-        a._call("commit", {"frame_token": snapshot.frame_token, "dest": str(dest)})
+        res = a._call("commit", {"frame_token": snapshot.frame_token, "dest": str(dest)})
         self._pending.pop(snapshot.frame_token, None)
+        # Sandboxed mods (e.g. Garry's Mod) cannot write outside their data folder: they stage the file
+        # there and report its path; we move it to its final place.
+        staged = res.get("staged")
+        src = (Path(staged) if Path(staged).is_absolute() else a.transport.dir / staged) if staged else dest
         deadline = time.monotonic() + a.options.commit_wait_s
-        while not (dest.exists() and dest.stat().st_size > 0):  # the mod may write asynchronously
+        while not (src.exists() and src.stat().st_size > 0):  # the mod may write asynchronously
             if time.monotonic() > deadline:
-                raise AdapterError(f"mod acknowledged commit but {dest} was not written")
+                raise AdapterError(f"mod acknowledged commit but {src} was not written")
             time.sleep(0.01)
+        if staged:
+            shutil.move(str(src), str(dest))
 
     def discard(self, snapshot: FrameSnapshot) -> None:
         self._pending.pop(snapshot.frame_token, None)

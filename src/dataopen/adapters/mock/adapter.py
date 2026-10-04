@@ -18,7 +18,7 @@ from ...core.models import (CameraModel, CameraSpec, CaptureRequest, EntityHandl
                             FrameSpec, SceneSpec)
 from ...core.randomization import (AdapterParameterSpace, Categorical, ParameterSpace, Uniform, derive_seed)
 from ...core.schema import HUMAN_13, BoneMapping, SkeletonSchema
-from .png import write_png
+from ...core.imageio import write_image
 
 # Rig A: engine-style names. Pelvis is not a bone: it is the mean of the two hips.
 RIG_A = BoneMapping("mock_a", {
@@ -241,7 +241,7 @@ class _Bridge(ICaptureBridge):
         return img
 
     def commit(self, snapshot: FrameSnapshot, dest: Path) -> None:
-        write_png(dest, self._pending.pop(snapshot.frame_token))
+        write_image(dest, self._pending.pop(snapshot.frame_token))
 
     def discard(self, snapshot: FrameSnapshot) -> None:
         self._pending.pop(snapshot.frame_token, None)

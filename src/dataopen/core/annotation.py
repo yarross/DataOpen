@@ -9,6 +9,7 @@ import numpy as np
 
 from .models import Annotation, EntityState, FrameSnapshot, Visibility
 from .projection import project, visibility_flags
+from .self_occlusion import apply_self_occlusion
 from .schema import SkeletonSchema
 
 
@@ -28,6 +29,7 @@ class AnnotationConfig:
     max_aspect: float = 8.0
     bbox_include_occluded: bool = True   # amodal-in-frame bbox vs visible-only
     depth_tol: float = 0.05
+    self_occlusion: bool = True          # torso/head capsule heuristic (engines can't see self-occlusion)
 
 
 @dataclass
@@ -59,6 +61,8 @@ class AnnotationBuilder:
         uv, z = project(ent.skeleton_world, cam)
         flags = visibility_flags(uv, z, cam, ent.joint_valid, snap.depth, cfg.depth_tol,
                                  ent.engine_visibility)
+        if cfg.self_occlusion:
+            flags = apply_self_occlusion(ent.skeleton_world, flags, cam.position, self.schema)
         n_vis = int((flags == Visibility.VISIBLE).sum())
         if n_vis == 0:
             return None, Verdict.ABSENT

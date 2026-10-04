@@ -74,6 +74,11 @@ class CameraModel:
         return CameraModel(width, height, f, f, width / 2.0, height / 2.0, M, near)
 
     @property
+    def position(self) -> np.ndarray:
+        """Camera centre in world coordinates."""
+        return -self.world_to_camera[:3, :3].T @ self.world_to_camera[:3, 3]
+
+    @property
     def intrinsics(self) -> np.ndarray:
         return np.array([[self.fx, 0, self.cx], [0, self.fy, self.cy], [0, 0, 1.0]])
 

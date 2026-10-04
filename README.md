@@ -16,6 +16,7 @@ dataopen collect --game gmod --out runs/a --frames 1000 --provenance-note "<ис
 dataopen verify  runs/a ; dataopen preview runs/a       # QA и контактный лист
 dataopen requalify runs/a --policy strict.toml          # новые пороги качества на готовом датасете (docs/QUALITY.md)
 dataopen detector train --config configs/apollo_s.toml --data runs/a --out runs/apollo_s   # детектор (pip install '.[train]')
+dataopen runtime bench --backend mock --fps 240 --duration 5       # runtime инференса: задержка / FPS / дропы / очередь (docs/RUNTIME.md)
 ```
 
 | Документ | О чём |
@@ -25,6 +26,7 @@ dataopen detector train --config configs/apollo_s.toml --data runs/a --out runs/
 | [docs/QUALITY.md](docs/QUALITY.md) | замкнутый цикл: проверка кадров моделью в памяти, адаптивная рандомизация, метаданные сложности |
 | [docs/SCHEMAS.md](docs/SCHEMAS.md) | целевая схема keypoints (shooter12: 12 прицельных точек, 2 класса), как менять набор точек данными |
 | [docs/DETECTOR.md](docs/DETECTOR.md) | детектор под Rockchip NPU: архитектура, обучение, экспорт, INT8, постобработка, бенчмарк (`dataopen detector ...`) |
+| [docs/RUNTIME.md](docs/RUNTIME.md) | runtime на целевом SoC: главный цикл, политика «новый кадр раньше старого», IPC-канал `KeypointArray`, метрики, интеграция с `IModelEvaluator` (`dataopen runtime ...`) |
 | [docs/PROTOCOL.md](docs/PROTOCOL.md) | протокол core ↔ мод для авторов модов |
 | [docs/MODDING.md](docs/MODDING.md) | как добавить игру |
 | [docs/GAMES.md](docs/GAMES.md) | выбор игр и чек-лист для новой |

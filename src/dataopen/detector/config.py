@@ -98,6 +98,7 @@ class TrainConfig:
     w_cls: float = 1.0
     w_box: float = 7.5
     w_kp: float = 12.0
+    w_kp_l1: float = 6.0                         # distance / person height: the OKS term alone has ~no gradient far from the target
     w_kp_score: float = 1.0
     w_vis: float = 1.0
     w_heat: float = 2.0

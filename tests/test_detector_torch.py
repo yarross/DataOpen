@@ -7,6 +7,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from dataopen.detector.layout import HeadLayout
+
 torch = pytest.importorskip("torch")
 pytest.importorskip("onnx")
 pytest.importorskip("onnxruntime")
@@ -222,6 +224,9 @@ def test_training_really_learns_and_writes_resumable_checkpoints(trained, toy):
     v = res["val"]
     assert v["map50"] > 0.3 and v["kp_ap_oks50"] > 0.3 and v["recall_oks50"] > 0.3, v        # a tiny model, 160 steps
     assert v["class_acc"] == 1.0                                                           # the team colour is learned
+    # The all-points OKS cannot tell whether the HEAD was found (it is 1 point of 12): the aim point is checked on its own.
+    # (A regression that left it ~50% of the person's height off still passed every assertion above.)
+    assert v["aim_ap50"] > 0.5 and v["aim_err_med"] < 0.1 and v["aim_hit_rate"] > 0.15, v
     assert (out / "best.pt").exists() and (out / "last.pt").exists()
     from dataopen.detector.train import train
     cfg2 = DetectorConfig(model_config("t"), TrainConfig(epochs=41, batch_size=8, imgsz=128, workers=0, amp=False, eval_every=100,
@@ -290,6 +295,29 @@ def test_the_exported_model_runs_in_the_closed_loop_evaluator_with_identical_res
         OnnxEvaluator(str(tmp_path / "plain.onnx"), "apollo")
 
 
+def test_the_trained_model_runs_through_the_production_runtime_with_the_same_quality(trained, toy, tmp_path):
+    """Export -> `OrtBackend` (C post-processor, packed Q12.4 KeypointArray) -> `RuntimeEvaluator` -> the closed loop's metrics:
+    the path that ships scores like the research path, and the layout sidecar for the .rknn conversion is written."""
+    from dataopen.detector.evaluate import evaluate_evaluator
+    from dataopen.detector.export import export_onnx, load_checkpoint
+    from dataopen.detector.infer import TorchEvaluator
+    from dataopen.runtime.backends import OrtBackend
+    from dataopen.runtime.evaluator import RuntimeEvaluator
+    model, lay, meta, _ = load_checkpoint(trained[0] / "best.pt")
+    export_onnx(model, lay, tmp_path / "u.onnx", "uint8", schema_meta=meta)
+    assert HeadLayout.from_json((tmp_path / "u.layout.json").read_text()) == lay
+    items = read_coco(toy, "val", 12)
+    schema = load_schema_from_dataset(toy)
+    m_t = evaluate_evaluator(TorchEvaluator(model, lay, "cpu"), items, schema)
+    ev = RuntimeEvaluator(OrtBackend(tmp_path / "u.onnx", "cpu", conf_thr=0.25), window=4)
+    m_r = evaluate_evaluator(ev, items, schema)
+    snap = ev.runtime_metrics()
+    ev.close()
+    for k in ("map50", "kp_ap_oks50", "recall_oks50", "aim_hit_rate", "class_acc"):
+        assert m_r[k] == pytest.approx(m_t[k], abs=0.03), k
+    assert snap["published"] == len(items) and snap["dropped_total"] == 0 and snap["errors"]["total"] == 0
+
+
 def test_int8_quantization_keeps_the_outputs_close_and_reports_how_close(trained, toy, tmp_path):
     from dataopen.detector.evaluate import evaluate_evaluator
     from dataopen.detector.export import export_onnx, load_checkpoint
@@ -355,6 +383,17 @@ def test_cli_end_to_end_train_eval_export_calib_quantize_bench(toy, tmp_path, ca
     assert (tmp_path / "b.py").exists()
     assert run("detector", "header", "--out", str(tmp_path / "h.h")) == 0 and "APOLLO_MAGIC" in (tmp_path / "h.h").read_text()
     assert run("detector", "train", "--variant", "t", "--data", str(tmp_path / "nothing"), "--out", str(tmp_path / "x")) == 4
+    # QAT and mixed precision from the command line
+    assert run("detector", "qat", "--ckpt", str(out / "best.pt"), "--data", str(toy), "--out", str(tmp_path / "qat.onnx"), "--epochs", "1",
+               "--batch-size", "8", "--workers", "0", "--calib-batches", "1", "--device", "cpu") == 0
+    assert (tmp_path / "qat.onnx").exists()
+    calib = tmp_path / "calib"
+    assert run("detector", "calib", "--data", str(toy), "--out", str(calib), "--n", "6", "--size", "128") == 0
+    assert run("detector", "sensitivity", "--onnx", str(tmp_path / "m.onnx"), "--calib", str(calib), "--work", str(tmp_path / "sw"),
+               "--n-images", "2", "--top", "3") == 0
+    assert run("detector", "quantize", "--onnx", str(tmp_path / "m.onnx"), "--calib", str(calib), "--out", str(tmp_path / "mx.onnx"),
+               "--min-images", "0", "--method", "minmax", "--exclude-worst", "2") == 0
+    assert (tmp_path / "mx.onnx").exists() and (tmp_path / "m.layout.json").exists()
     capsys.readouterr()
 
 
@@ -378,3 +417,136 @@ def test_a_trained_detector_runs_inside_the_closed_loop_as_the_baseline_model(tr
         main(["collect", "--game", "mock", "--frames", "5", "--out", str(bad), "--no-doctor", "--quality-model",
               str(tmp_path / "m.onnx"), "--quality-format", "apollo"])
     assert e2.value.code == 4
+
+
+def test_aim_point_regression_has_a_gradient_even_when_it_starts_far_away():
+    """Regression for two real bugs: (1) the OKS-only keypoint loss vanishes a few pixels from the target when the sigma is tight
+    (the aim point's), so a point that starts far off never converged; (2) the heatmap's positive cell was never marked."""
+    cfg = TrainConfig(w_kp=0.0, w_kp_l1=6.0, w_cls=0.0, w_box=0.0, w_kp_score=0.0, w_vis=0.0, w_heat=0.0, tal_topk_o2m=3)
+    lay = build_model(model_config("t"), primary=(1,)).layout(tuple(SCHEMA.keypoints), tuple(SCHEMA.classes))
+    lf = DetectionLoss(cfg, lay, SCHEMA.oks_sigmas(), SCHEMA.oks_weights(), (1,))
+    tg = make_batch(1)
+    shapes = [(16, 16), (8, 8), (4, 4)]
+    outs = [torch.zeros(1, lay.channels, h, w, requires_grad=True) for h, w in shapes]
+    with torch.no_grad():
+        for o in outs:
+            o[:, 2:6] = 1.0                                                      # boxes of a plausible size so anchors get assigned
+            o[:, :2] = 2.0
+    loss, items = lf.head_loss(outs, tg, 3)
+    loss.backward()
+    kp_grad = sum(float(o.grad[:, 6:30].abs().sum()) for o in outs)
+    assert float(items["kp_l1"]) > 0 and kp_grad > 0, "the keypoint offsets must receive gradient from the distance term"
+    # the heatmap: the loss is low when the logit peaks on the object's centre cell and high when it peaks elsewhere
+    cfg2 = TrainConfig(w_heat=1.0)
+    lf2 = DetectionLoss(cfg2, build_model(model_config("t"), primary=(1,)).layout(tuple(SCHEMA.keypoints), tuple(SCHEMA.classes)),
+                        SCHEMA.oks_sigmas(), SCHEMA.oks_weights(), (1,))
+    tg2 = make_batch(1)
+    tg2["valid"][0, 1] = False                                                   # one object: one positive cell
+    stride = 4
+    x, y = float(tg2["kpts"][0, 0, 1, 0]), float(tg2["kpts"][0, 0, 1, 1])
+    right = torch.full((1, 3, 32, 32), -8.0)
+    right[0, 0, int(round(y / stride - 0.5)), int(round(x / stride - 0.5))] = 8.0
+    wrong = torch.full((1, 3, 32, 32), -8.0)
+    wrong[0, 0, 0, 0] = 8.0
+    assert float(lf2.heat_loss(right, tg2)) < 0.5 * float(lf2.heat_loss(wrong, tg2))
+
+
+def _ddp_worker(rank, world, root, out, port, q):
+    import os
+    os.environ.update(RANK=str(rank), WORLD_SIZE=str(world), LOCAL_RANK=str(rank), MASTER_ADDR="127.0.0.1", MASTER_PORT=str(port))
+    try:
+        from dataopen.detector.train import train
+        cfg = DetectorConfig(model_config("t"), TrainConfig(epochs=2, batch_size=8, imgsz=128, workers=0, amp=False, eval_every=1,
+                                                            mosaic=0.0, mixup=0.0, flip=0.0, smoke_flash=0.0, close_mosaic_epochs=0))
+        res = train(cfg, [Path(root)], Path(out), device="cpu", log=lambda s: None)
+        q.put((rank, res["param_checksum"], res["steps"], res["world_size"]))
+    except BaseException as e:                                                      # report instead of hanging the parent
+        q.put((rank, repr(e), -1, -1))
+
+
+def test_data_parallel_training_keeps_the_ranks_in_sync_and_only_rank_zero_writes(toy, tmp_path):
+    """Two real processes (gloo, CPU): DDP must leave identical parameters on both ranks; one set of checkpoints."""
+    import socket
+    import torch.multiprocessing as mp
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    ctx = mp.get_context("spawn")
+    q = ctx.Queue()
+    procs = [ctx.Process(target=_ddp_worker, args=(r, 2, str(toy), str(tmp_path / "ddp"), port, q)) for r in range(2)]
+    for p in procs:
+        p.start()
+    got = sorted([q.get(timeout=240) for _ in procs])
+    for p in procs:
+        p.join(30)
+    assert all(isinstance(g[1], float) for g in got), got
+    assert got[0][1] == pytest.approx(got[1][1], rel=1e-9) and got[0][2] == got[1][2] > 0 and got[0][3] == 2
+    assert (tmp_path / "ddp" / "best.pt").exists() and (tmp_path / "ddp" / "last.pt").exists()
+    lines = (tmp_path / "ddp" / "train_log.jsonl").read_text().splitlines()
+    assert len(lines) == 2                                                          # one log, written by rank 0 only
+
+
+def test_the_global_batch_must_split_evenly_across_ranks(toy, tmp_path, monkeypatch):
+    from dataopen.detector.data import DataError
+    from dataopen.detector.train import train
+    monkeypatch.setenv("WORLD_SIZE", "3")
+    cfg = DetectorConfig(model_config("t"), TrainConfig(epochs=1, batch_size=8, imgsz=128, workers=0))
+    with pytest.raises(DataError, match="divisible"):
+        train(cfg, [toy], tmp_path / "x", device="cpu")
+
+
+def test_qat_finetunes_a_fused_model_exports_qdq_and_stays_usable(trained, toy, tmp_path):
+    from torch.utils.data import DataLoader
+
+    from dataopen.detector.evaluate import evaluate_evaluator
+    from dataopen.detector.export import load_checkpoint
+    from dataopen.detector.qat import FakeQuantConv, export_qat_onnx, prepare_qat, qat_finetune
+    from dataopen.quality.evaluators.onnx import OnnxEvaluator
+    model, lay, meta, _ = load_checkpoint(trained[0] / "best.pt")
+    with pytest.raises(ValueError, match="fuse"):
+        prepare_qat(model)                                                           # only the deploy graph can be quantized
+    model.fuse()
+    q = prepare_qat(model)
+    n_conv = sum(isinstance(m, torch.nn.Conv2d) for m in model.modules())
+    wrapped = [m for m in q.modules() if isinstance(m, FakeQuantConv)]
+    assert len(wrapped) == n_conv and sum(m.quant_output for m in wrapped) == 10      # 3 head convs x 3 levels + the aim map
+    tc = TrainConfig(imgsz=128, mosaic=0.0, mixup=0.0, flip=0.0, smoke_flash=0.0, workers=0)
+    ds = PoseDataset(read_coco(toy, "train", 12), tc, SCHEMA.flip_idx(), 12, train=True)
+    lf = DetectionLoss(tc, lay, SCHEMA.oks_sigmas(), SCHEMA.oks_weights(), model.primary)
+    net, info = qat_finetune(model, lf, DataLoader(ds, batch_size=8, collate_fn=collate), epochs=1, lr=1e-4, calib_batches=2,
+                             log=lambda s: None, max_steps=3)
+    assert info["steps"] == 3 and all(np.isfinite(info["loss"]))
+    assert all(float(m.in_seen) == 1.0 and float(m.in_max) > float(m.in_min) for m in net.modules() if isinstance(m, FakeQuantConv))
+    r = export_qat_onnx(net, lay, tmp_path / "qat.onnx", meta)
+    assert r["max_rel_diff_vs_torch"] < 0.15, r                                      # ORT QDQ == the fake-quant forward (rounding aside)
+    import onnx
+    ops = collections.Counter(n.op_type for n in onnx.load(str(tmp_path / "qat.onnx")).graph.node)
+    assert ops["QuantizeLinear"] > 30 and ops["DequantizeLinear"] > 30
+    # weights sit exactly on a per-channel int8 grid, so a later per-channel int8 quantizer (RKNN) reproduces them
+    w = next(m for m in net.modules() if isinstance(m, FakeQuantConv)).conv.weight.detach()
+    sc = w.abs().amax(dim=(1, 2, 3)) / 127.0
+    grid = w / sc[:, None, None, None]
+    assert float((grid - grid.round()).abs().max()) < 1e-3
+    items = read_coco(toy, "val", 12)
+    m = evaluate_evaluator(OnnxEvaluator(str(tmp_path / "qat.onnx"), "apollo", (128, 128)), items, load_schema_from_dataset(toy))
+    assert m["class_acc"] >= 0.9 and m["map50"] > 0.2
+
+
+def test_layer_sensitivity_ranks_convolutions_and_mixed_precision_keeps_them_in_float(trained, toy, tmp_path):
+    from dataopen.detector.export import export_onnx, load_checkpoint
+    from dataopen.detector.quantize import layer_sensitivity, quantize_ort
+    import onnx
+    model, lay, meta, _ = load_checkpoint(trained[0] / "best.pt")
+    export_onnx(model, lay, tmp_path / "f.onnx", "float", schema_meta=meta)
+    files = sorted((toy / "images" / "train").glob("*.png"))[:4]
+    rows = layer_sensitivity(tmp_path / "f.onnx", files, tmp_path / "w", n_images=3, top=0)
+    n_conv = sum(n.op_type == "Conv" for n in onnx.load(str(tmp_path / "f.onnx")).graph.node)
+    assert len(rows) == n_conv and rows == sorted(rows, key=lambda r: r["min_cosine"])
+    assert all(0.0 <= r["min_cosine"] <= 1.0 + 1e-6 for r in rows)
+    worst = [r["node"] for r in rows[:3]]
+    rep = quantize_ort(tmp_path / "f.onnx", tmp_path / "mixed.onnx", files, "minmax", "uint8", min_images=0, nodes_to_exclude=worst)
+    assert rep["nodes_kept_in_float"] == worst
+    g = onnx.load(str(tmp_path / "mixed.onnx"))
+    q_in = {i for n in g.graph.node if n.op_type == "DequantizeLinear" for i in n.output}
+    kept = {n.name: n for n in g.graph.node if n.name in worst}
+    assert all(n.op_type == "Conv" and not any(i in q_in for i in n.input[:2]) for n in kept.values())    # float conv: no DQ inputs

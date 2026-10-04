@@ -67,7 +67,10 @@ def _span(skel: np.ndarray, valid: np.ndarray) -> float:
 
 
 def run_doctor(adapter: IGameAdapter, out_dir: Path, frames: int = 6, tol_px: float = 3.0, seed: int = 0,
-               builder: Optional[AnnotationBuilder] = None, image_ext: str = "png") -> DoctorReport:
+               builder: Optional[AnnotationBuilder] = None, image_ext: str = "png", target: Optional[str] = None,
+               target_params: Optional[dict] = None) -> DoctorReport:
+    """`target`: a target keypoint schema (built-in name or .toml): the doctor then also checks the points DERIVED from the mod's
+    skeleton (are they valid, is the head where the schema thinks it is) and the team that decides the class."""
     rep = DoctorReport()
     out = Path(out_dir) / "doctor"
     out.mkdir(parents=True, exist_ok=True)
@@ -87,6 +90,22 @@ def run_doctor(adapter: IGameAdapter, out_dir: Path, frames: int = 6, tol_px: fl
     rep.add("capabilities", "INFO", ", ".join(sorted(c.value for c in info.capabilities)) or "none declared")
     schema = info.schema
     builder = builder or AnnotationBuilder(schema)
+    mapping, builder_t = None, None
+    if target:
+        from .schema_io import SchemaFileError, resolve_target
+        try:
+            _, mapping = resolve_target(target, schema, target_params)
+        except SchemaFileError as e:
+            rep.add("target_schema", "FAIL", str(e), "fix the schema file / profile [schema] table, or pick a schema written "
+                    f"against the {schema.name!r} skeleton the mod reports")
+            return _finish(rep, out)
+        builder_t = AnnotationBuilder(mapping.target)
+        rep.add("target_schema", "PASS", f"{schema.name} ({schema.num_keypoints} points) -> {mapping.target.name} "
+                f"({mapping.target.num_keypoints} points, classes {list(mapping.target.classes)})")
+    t_invalid: dict[str, int] = {}
+    t_head: list[float] = []
+    t_above: list[bool] = []
+    t_team = [0, 0]
 
     # 2. mod-side self tests
     if hasattr(adapter, "selftest"):
@@ -154,6 +173,22 @@ def run_doctor(adapter: IGameAdapter, out_dir: Path, frames: int = 6, tol_px: fl
                                           f"missing {pr.missing})", diagnose(pr, cam.width, cam.height, tol_px)))
             cam_fwd = cam.world_to_camera[2, :3]
             built = builder.build(snap)
+            if mapping is not None:
+                snap_t = mapping.convert_snapshot(snap, {h.entity_id: h.meta for h in handles})
+                built_t = builder_t.build(snap_t)
+                ts = mapping.target
+                head_g = ts.group_idx("head")
+                for e in snap_t.entities:
+                    for j in np.where(~e.joint_valid)[0]:
+                        t_invalid[ts.keypoints[j]] = t_invalid.get(ts.keypoints[j], 0) + 1
+                    if len(head_g) >= 2 and e.joint_valid[head_g[:2]].all():
+                        t_head.append(float(np.linalg.norm(e.skeleton_world[head_g[0]] - e.skeleton_world[head_g[1]])))
+                    t_team[0] += 1
+                    t_team[1] += int(ts.class_of(e.meta)[1] is None)
+                prim, neck = ts.primary_idx(), ts.role("neck")
+                for a in built_t.annotations:
+                    if prim and neck is not None and a.keypoints[prim[0], 2] > 0 and a.keypoints[ts.index(neck), 2] > 0:
+                        t_above.append(bool(a.keypoints[prim[0], 1] < a.keypoints[ts.index(neck), 1]))
             for v in built.verdicts.values():
                 verdicts[v.value] = verdicts.get(v.value, 0) + 1
             for e in snap.entities:
@@ -196,6 +231,8 @@ def run_doctor(adapter: IGameAdapter, out_dir: Path, frames: int = 6, tol_px: fl
                     problems.append(Check("image_content", "WARN", f"frame {i} looks blank (std={img.std():.2f})",
                                           "black/flat frame: loading screen, menu, HUD or wrong capture region"))
                 write_png(out / f"overlay_{i}.png", draw_annotations(img, built.annotations, schema))
+                if mapping is not None:
+                    write_png(out / f"overlay_target_{i}.png", draw_annotations(img, built_t.annotations, mapping.target))
             except (RuntimeError, ValueError, OSError) as e:
                 problems.append(Check("overlay", "WARN", f"could not read back {dest.name}: {e}",
                                       "install Pillow (pip install 'dataopen[capture]') for JPEG/odd PNG files"))
@@ -252,6 +289,29 @@ def run_doctor(adapter: IGameAdapter, out_dir: Path, frames: int = 6, tol_px: fl
     else:
         rep.add("entities", "WARN", "no persons captured in any frame",
                 "nothing to label: spawn failed, camera never sees the actors, or observe mode found nobody")
+    if mapping is not None and spans:
+        if t_invalid:
+            rep.add("target_points", "WARN", f"target points invalid in some frames: {t_invalid}",
+                    "a derived point needs all its parents: fix the missing bones with [bones] overrides")
+        else:
+            rep.add("target_points", "PASS", "every target point could be derived in every frame")
+        if t_head:
+            med = float(np.median(t_head))
+            if 0.04 <= med <= 0.22:
+                rep.add("head_geometry", "PASS", f"head_top to head_center {med * 100:.0f} cm (plausible)")
+            else:
+                rep.add("head_geometry", "WARN", f"head_top to head_center {med * 100:.0f} cm, a head is ~10 cm",
+                        "calibrate [schema.params] head_top_offset_m / head_center_offset_m for this game's rig and look at "
+                        "overlay_target_*.png: the aim point must sit in the middle of the head")
+        if t_above:
+            frac = float(np.mean(t_above))
+            rep.add("aim_above_neck", "PASS" if frac >= 0.8 else "WARN", f"the aim point is above the neck in {frac:.0%} of persons",
+                    "" if frac >= 0.8 else "the aim point is on the wrong side of the neck: wrong head bone or offset sign")
+        if len(mapping.target.classes) > 1 and t_team[0]:
+            ok = t_team[1] / t_team[0]
+            rep.add("class_source", "PASS" if ok >= 0.99 else "WARN", f"{ok:.0%} of persons carry '{mapping.target.class_key}'",
+                    "" if ok >= 0.99 else f"entities without '{mapping.target.class_key}' are labeled class 0 "
+                    f"({mapping.target.classes[0]}): the mod must report the team (an actor parameter {mapping.target.class_key!r})")
     if lr_ok + lr_bad:
         if lr_bad == 0:
             rep.add("left_right", "PASS", f"left/right consistent with the image on {lr_ok} persons")

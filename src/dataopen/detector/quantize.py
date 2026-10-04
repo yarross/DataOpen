@@ -56,8 +56,10 @@ class _Reader:
 
 
 def quantize_ort(fp32: str | Path, out: str | Path, calib: Iterable[Path], method: str = "percentile",
-                 activation: str = "uint8", min_images: int = 500) -> dict:
-    """Static QDQ quantization. `method`: minmax | entropy | percentile. Returns a report (and warns when < min_images)."""
+                 activation: str = "uint8", min_images: int = 500, nodes_to_exclude: Optional[Sequence[str]] = None,
+                 nodes_to_quantize: Optional[Sequence[str]] = None) -> dict:
+    """Static QDQ quantization. `method`: minmax | entropy | percentile. `nodes_to_exclude` keeps those nodes in float (mixed
+    precision: see `layer_sensitivity`). Returns a report (and warns when < min_images)."""
     from onnxruntime.quantization import CalibrationMethod, QuantFormat, QuantType, quantize_static
     files = list(calib)
     if not files:
@@ -69,8 +71,10 @@ def quantize_ort(fp32: str | Path, out: str | Path, calib: Iterable[Path], metho
     extra = {"ActivationSymmetric": False, "WeightSymmetric": True}
     quantize_static(str(fp32), str(out), reader, quant_format=QuantFormat.QDQ, per_channel=True, weight_type=QuantType.QInt8,
                     activation_type=QuantType.QUInt8 if activation == "uint8" else QuantType.QInt8,
-                    calibrate_method=methods[method], extra_options=extra)
-    rep = {"int8": str(out), "calibration_images": len(files), "method": method, "activation": activation,
+                    calibrate_method=methods[method], extra_options=extra,
+                    nodes_to_exclude=list(nodes_to_exclude or []), nodes_to_quantize=list(nodes_to_quantize) if nodes_to_quantize else None)
+    rep = {"int8": str(out), "nodes_kept_in_float": list(nodes_to_exclude or []), "calibration_images": len(files),
+           "method": method, "activation": activation,
            "weights": "int8 per-channel", "activations": f"{activation} per-tensor",
            "size_mb": round(Path(out).stat().st_size / 1e6, 3)}
     if len(files) < min_images:
@@ -130,3 +134,23 @@ def rknn_convert(onnx_path: str | Path, dataset_txt: str | Path, out_rknn: str |
     script.write_text(RKNN_SCRIPT.format(platform=platform, algorithm=algorithm, onnx=onnx_path, dataset=dataset_txt, out=out_rknn,
                                          name=script.name, w=size[0], h=size[1], sample=sample))
     return script
+
+
+def layer_sensitivity(fp32: str | Path, files: Sequence[Path], work_dir: str | Path, n_images: int = 8, top: int = 0) -> list[dict]:
+    """Which convolutions hurt when quantized: quantize ONE Conv at a time (min-max calibration, `n_images` frames) and measure the
+    cosine similarity of the model outputs against FP32. Sorted worst first; the worst few are the candidates for
+    `quantize_ort(nodes_to_exclude=...)` (and for INT16/FP16 in RKNN's hybrid quantization). Costs one quantization per Conv."""
+    import onnx
+    work = Path(work_dir)
+    work.mkdir(parents=True, exist_ok=True)
+    convs = [n.name for n in onnx.load(str(fp32)).graph.node if n.op_type == "Conv"]
+    files = list(files)[:n_images]
+    rows = []
+    for name in convs:
+        q = work / "one.onnx"
+        quantize_ort(fp32, q, files, "minmax", "uint8", min_images=0, nodes_to_quantize=[name])
+        sim = compare_outputs(fp32, q, files, n_images)
+        rows.append({"node": name, "min_cosine": min(v["cosine"] for v in sim.values()),
+                     "mean_rel_error": round(float(np.mean([v["rel_error"] for v in sim.values()])), 5)})
+    rows.sort(key=lambda r: r["min_cosine"])
+    return rows[:top] if top else rows

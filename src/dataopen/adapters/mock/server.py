@@ -35,6 +35,7 @@ class MockServerOptions:
     image_peek: bool = True         # offer `peek` (pixels to the core before commit)
     image_shm: bool = True          # ... through shared memory (False = staged file)
     mod_version: str = "mock-1"
+    variant: str = ""               # "shooter": the mock world with teams, headgear, camouflage, smoke, flashes, head cover
 
 
 def native_project(world, cam: dict[str, Any], fov_scale: float = 1.0):
@@ -55,7 +56,7 @@ class MockGameServer:
                  directory: Path | str = ".") -> None:
         self.dir = Path(directory)
         self.opt = options or MockServerOptions()
-        self.adapter = MockGameAdapter(width, height)
+        self.adapter = MockGameAdapter(width, height, variant=self.opt.variant)
         self.handles: list = []
         self.snaps: dict[str, FrameSnapshot] = {}
         self.frames = 0

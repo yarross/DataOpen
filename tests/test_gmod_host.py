@@ -211,3 +211,28 @@ def test_closed_loop_in_gmod_peek_via_staged_dat_file(tmp_path, png):
         assert not [p for p in (mailbox / "staging").iterdir() if p.name != "selftest.dat"]
     finally:
         g.close()
+
+
+def test_teams_become_model_pools_and_reach_the_dataset_as_classes(tmp_path, png):
+    """shooter12 needs a team per player. In Garry's Mod a team is a model pool (police/Combine = ct, citizens = t); the mod reports
+    it as entity meta over the wire and the core turns it into the class."""
+    import json
+
+    from dataopen.core.schema_io import resolve_target
+    g, a, _ = start(tmp_path, png)
+    try:
+        a.connect()
+        ps = a.parameter_space()
+        assert set(ps.actor.params["team"].choices) == {"ct", "t"} and "model_u" in ps.actor.params
+        _, mapping = resolve_target("shooter12", a.schema)
+        out = tmp_path / "ds"
+        rep = DatasetOrchestrator(a, SessionConfig(out, seed=5, target_frames=16, frames_per_scene=4, negative_ratio=0.0,
+                                                max_attempt_factor=30), target=mapping).run()
+        assert rep.accepted == 16
+        recs = [json.loads(x) for p in (out / "annotations").glob("*.jsonl") for x in p.read_text().splitlines()]
+        pairs = {(an["class_id"], an["meta"]["model"]) for r in recs for an in r["annotations"]}
+        assert {c for c, _ in pairs} == {0, 1}                                       # both teams occur
+        assert all((m == "police") == (c == 0) for c, m in pairs), pairs               # ct wears police, t wears citizens
+        assert all(len(an["keypoints"]) == 36 for r in recs for an in r["annotations"])
+    finally:
+        g.close()

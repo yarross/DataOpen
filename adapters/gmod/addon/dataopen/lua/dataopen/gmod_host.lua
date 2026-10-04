@@ -70,6 +70,23 @@ return function(R)
     return names
   end
 
+  -- Teams: the dataset's class (player_ct / player_t) comes from the entity meta `team`. In Garry's Mod a team is a model pool:
+  -- the Combine / police models are "ct", the citizen and resistance models are "t". Only models that exist are used.
+  local TEAM_POOLS = {
+    ct = { "police", "police_fem", "combine", "combineprison", "combineelite" },
+    t = { "male01", "male02", "male03", "male04", "male05", "male06", "male07", "male08", "male09", "female01", "female02",
+          "female03", "female04", "female06", "female07", "kleiner", "eli", "barney", "monk", "alyx", "mossman" },
+  }
+
+  local function team_pool(team)
+    local valid = {}
+    for _, n in ipairs(model_names()) do valid[n] = true end
+    local pool = {}
+    for _, n in ipairs(TEAM_POOLS[team] or {}) do if valid[n] then pool[#pool + 1] = n end end
+    if #pool == 0 then pool = model_names() end   -- no model of that team installed: any model, the team label stays
+    return pool
+  end
+
   function host.parameter_space()
     local models = R.json.array(model_names())
     return {
@@ -82,6 +99,8 @@ return function(R)
       actor = {
         rig = { type = "constant", value = "auto" },
         model = { type = "categorical", choices = models },
+        team = { type = "categorical", choices = R.json.array({ "ct", "t" }) },
+        model_u = { type = "uniform", lo = 0, hi = 1 },    -- which model of the team's pool
         weapon = { type = "categorical", choices = R.json.array(weapon_names),
                    weights = R.json.array({ 0.35, 0.1, 0.1, 0.15, 0.1, 0.1, 0.05, 0.05 }) },
         skin = { type = "uniform", lo = 0, hi = 1 },
@@ -240,7 +259,12 @@ return function(R)
         end
       end
       if pos then
-        local path = player_manager.TranslatePlayerModel(params.model)  -- VERIFY
+        local model_name = params.model
+        if params.team then
+          local pool = team_pool(params.team)
+          model_name = pool[math.min(#pool, math.floor((tonumber(params.model_u) or 0) * #pool) + 1)]
+        end
+        local path = player_manager.TranslatePlayerModel(model_name)  -- VERIFY
         local ent = ClientsideModel(path, RENDERGROUP_OPAQUE)
         if IsValid(ent) then
           ent:SetPos(pos)
@@ -259,9 +283,9 @@ return function(R)
           end
           local rig = ent:LookupBone("ValveBiped.Bip01_Pelvis") and "valvebiped" or "generic"
           world.actors[#world.actors + 1] = { ent = ent, wep = wep, pos = pos, yaw = rnd() * 360, hold = weapon.hold,
-                                              rig = rig, model = params.model, weapon = weapon.name }
+                                              rig = rig, model = model_name, weapon = weapon.name, team = params.team }
           handles[#handles + 1] = { entity_id = #world.actors - 1, rig_id = rig,
-                                    meta = { model = params.model, weapon = weapon.name } }
+                                    meta = { model = model_name, weapon = weapon.name, team = params.team } }
         end
       end
     end

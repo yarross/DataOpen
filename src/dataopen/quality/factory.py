@@ -46,6 +46,30 @@ def build_evaluator(spec: dict[str, Any], schema: SkeletonSchema, bundle=None) -
     kind = spec.get("evaluator", "none")
     if kind in ("none", "", None):
         return None
+    if spec.get("runtime") and kind != "runtime":                  # judge the model through the production runtime path
+        return build_evaluator({**spec, "evaluator": "runtime", "inner": kind}, schema, bundle)
+    if kind == "runtime":
+        from ..runtime.backends import EvaluatorBackend, OrtBackend
+        from ..runtime.evaluator import RuntimeEvaluator
+        inner = spec.get("inner", "onnx")
+        if inner == "onnx" and spec.get("format") == "apollo":
+            if not spec.get("model"):
+                raise QualityConfigError("runtime evaluator needs `model = \"path/to/model.onnx\"`")
+            try:
+                backend = OrtBackend(spec["model"], spec.get("device", "cpu"), float(spec.get("conf_thr", 0.25)),
+                                     int(spec.get("max_det", 20)), spec.get("post", "auto"))
+            except (ValueError, RuntimeError, ImportError) as e:
+                raise QualityConfigError(f"cannot load {spec['model']} in the runtime: {e}") from e
+            lay = backend.layout
+            if lay.keypoints and tuple(lay.keypoints) != tuple(schema.keypoints):
+                raise QualityConfigError(f"{spec['model']} was trained for the keypoints {list(lay.keypoints)}, but this run is "
+                                         f"labeled with {list(schema.keypoints)}: pass the matching --schema")
+        else:
+            ev = build_evaluator({**spec, "evaluator": inner, "runtime": False}, schema, bundle)
+            if ev is None:
+                raise QualityConfigError("runtime evaluator: the inner evaluator is 'none'")
+            backend = EvaluatorBackend(ev, n_kpt=schema.num_keypoints)
+        return RuntimeEvaluator(backend, window=int(spec.get("runtime_window", 8)), n_kpt=schema.num_keypoints)
     if kind == "simulated":
         from .evaluators.simulated import SimulatedEvaluator
         return SimulatedEvaluator(schema, seed=int(spec.get("seed", 0)))

@@ -5,7 +5,10 @@
   kp_ap_oks50    COCO keypoint AP at OKS 0.5, OKS weighted by the SCHEMA (aim point 3x), class-agnostic
   kp_ap_oks50_u  the same with the plain COCO (unweighted) OKS
   recall_oks50   share of ground-truth persons found with weighted OKS >= 0.5 at the operating point (score >= conf)
+  aim_ap50       AP at primary-keypoint similarity 0.5 (the aim point alone; the all-points OKS cannot see an aim failure, because
+                 the head is one point of twelve: a head that is 20 px off still scores OKS >= 0.5)
   aim_hit_rate   share of persons whose primary keypoint is within `hit_rel` of the person's height
+  aim_err_med    median error of that point in units of person height (found persons)
   class_acc      share of found persons with the right class
 Every number is also reported for the HARD subset (images whose closed-loop weight >= hard_weight) so progress on the frames
 that matter is visible; hard frames are where a model that is merely good on average fails.
@@ -89,6 +92,13 @@ def _evaluate(gts, preds, schema: SkeletonSchema, conf: float, hit_rel: float) -
     def oks_u(g, p):
         return oks(g.keypoints, p.keypoints, g.area, sig, None) if p.keypoints is not None else 0.0
 
+    def aim_sim(g, p):
+        lab = [i for i in prim if g.keypoints[i, 2] > 0]
+        if p.keypoints is None or not lab:
+            return 0.0
+        from ..quality.metrics import keypoint_similarity
+        return float(keypoint_similarity(g.keypoints, p.keypoints, g.area, sig)[lab].mean())
+
     def ap_for(sim, thr, per_class: Optional[int]):
         scores, tps, n_gt = [], [], 0
         for g_img, p_img in zip(gts, preds):
@@ -108,8 +118,11 @@ def _evaluate(gts, preds, schema: SkeletonSchema, conf: float, hit_rel: float) -
            "map50": float(np.mean(per_cls)) if per_cls else float("nan"),
            "ap50_person": ap_for(iou_sim, 0.5, None),
            "kp_ap_oks50": ap_for(oks_w, 0.5, None), "kp_ap_oks50_u": ap_for(oks_u, 0.5, None)}
+    if prim:
+        res["aim_ap50"] = ap_for(aim_sim, 0.5, None)
     # operating point: detections with score >= conf
     found = hits = cls_ok = cls_n = total = 0
+    aim_errs: list[float] = []
     for g_img, p_img in zip(gts, preds):
         conf_p = sorted([p for p in p_img if p.score >= conf], key=lambda p: -p.score)
         used: set[int] = set()
@@ -134,8 +147,10 @@ def _evaluate(gts, preds, schema: SkeletonSchema, conf: float, hit_rel: float) -
             if lab:
                 err = np.hypot(*(g.keypoints[lab, :2] - p.keypoints[lab, :2]).T).mean() / max(g.bbox[3], 1e-9)
                 hits += int(err <= hit_rel)
+                aim_errs.append(float(err))
     res["recall_oks50"] = found / total if total else float("nan")
     res["aim_hit_rate"] = hits / total if (total and prim) else float("nan")
+    res["aim_err_med"] = float(np.median(aim_errs)) if aim_errs else float("nan")
     res["class_acc"] = cls_ok / cls_n if cls_n else float("nan")
     return {k: (round(v, 4) if isinstance(v, float) and not np.isnan(v) else v) for k, v in res.items()}
 
@@ -155,9 +170,13 @@ def evaluate_evaluator(ev: IModelEvaluator, items, schema: SkeletonSchema, conf:
     return evaluate_predictions(gts, preds, schema, conf, weights=weights)
 
 
-def check_targets(metrics: dict, map50: float = 0.90, kp_oks50: float = 0.85) -> list[str]:
-    """Failures against the brief's targets (empty = all met)."""
+def check_targets(metrics: dict, map50: float = 0.90, kp_oks50: float = 0.85, aim_ap50: Optional[float] = 0.85) -> list[str]:
+    """Failures against the brief's targets (empty = all met). The aim point is checked on its own (`aim_ap50`, default 0.85,
+    skipped for schemas without a primary point or with aim_ap50=None): the all-points OKS target alone can be met by a model
+    that never finds the head."""
     out = []
+    if aim_ap50 is not None and "aim_ap50" in metrics and not metrics["aim_ap50"] > aim_ap50:
+        out.append(f"aim_ap50 {metrics['aim_ap50']} <= {aim_ap50}")
     if not metrics.get("map50", 0.0) > map50:
         out.append(f"map50 {metrics.get('map50')} <= {map50}")
     if not metrics.get("kp_ap_oks50", 0.0) > kp_oks50:

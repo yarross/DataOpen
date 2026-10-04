@@ -19,7 +19,7 @@ train = ["torch>=2.2", "pillow>=10", "onnx", "onnxruntime>=1.17"]   # the detect
 where = ["src"]
 
 [tool.setuptools.package-data]
-dataopen = ["game_profiles/*.toml", "schemas/*.toml"]
+dataopen = ["game_profiles/*.toml", "schemas/*.toml", "detector/csrc/*"]
 
 [project.scripts]
 dataopen = "dataopen.cli:main"
@@ -36,3 +36,6 @@ extend-exclude = ["adapters"]
 [tool.ruff.lint]
 select = ["E", "F", "W", "B"]
 ignore = ["E741", "B905", "B008", "B027"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E702"]

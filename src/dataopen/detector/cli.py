@@ -86,6 +86,41 @@ def _cmd_export(a) -> int:
     return EXIT_OK
 
 
+def _cmd_qat(a) -> int:
+    """QAT: fine-tune the fused deploy model with fake quantization on the training split, export QDQ ONNX (the fallback when PTQ
+    loses more than the budget; docs/DETECTOR.md section 6)."""
+    _need_torch()
+    import torch
+    from torch.utils.data import DataLoader
+
+    from .config import TrainConfig
+    from .data import PoseDataset, collate, load_schema_from_dataset, read_coco
+    from .export import load_checkpoint
+    from .loss import DetectionLoss
+    from .qat import export_qat_onnx, qat_finetune
+    dev = "cuda" if a.device == "auto" and torch.cuda.is_available() else ("cpu" if a.device == "auto" else a.device)
+    model, lay, meta, _ = load_checkpoint(a.ckpt, device=dev)
+    model.fuse()
+    schema = load_schema_from_dataset(Path(a.data[0]))
+    items = [it for d in a.data for it in read_coco(Path(d), "train", schema.num_keypoints)]
+    tc = TrainConfig(imgsz=lay.input_size[0], mosaic=0.0, mixup=0.0, workers=a.workers, batch_size=a.batch_size)
+    ds = PoseDataset(items, tc, schema.flip_idx(), schema.num_keypoints, train=True, imgsz=tc.imgsz)
+    loader = DataLoader(ds, batch_size=a.batch_size, shuffle=True, num_workers=a.workers, collate_fn=collate,
+                        drop_last=len(ds) >= a.batch_size)
+    loss_fn = DetectionLoss(tc, lay, schema.oks_sigmas(), schema.oks_weights(), model.primary)
+    net, info = qat_finetune(model, loss_fn, loader, a.epochs, a.lr, dev, a.calib_batches)
+    _print({"qat": info, "export": export_qat_onnx(net, lay, a.out, meta)})
+    return EXIT_OK
+
+
+def _cmd_sensitivity(a) -> int:
+    """Which convolutions lose the most when quantized: the candidates for float / INT16 (mixed precision)."""
+    from .quantize import calibration_files, layer_sensitivity
+    rows = layer_sensitivity(a.onnx, calibration_files(a.calib, a.n_images), Path(a.work), a.n_images, a.top)
+    _print(rows)
+    return EXIT_OK
+
+
 def _cmd_calib(a) -> int:
     from .calibration_set import build_calibration_set
     try:
@@ -102,7 +137,12 @@ def _cmd_quantize(a) -> int:
     files = calibration_files(a.calib)
     rep = {}
     if a.out:
-        rep["ort"] = quantize_ort(a.onnx, a.out, files, a.method, a.activation, a.min_images)
+        keep_float = list(a.exclude or [])
+        if a.exclude_worst:                                             # mixed precision: the N most sensitive convs stay float
+            from .quantize import layer_sensitivity
+            rows = layer_sensitivity(a.onnx, files, Path(a.out).parent / "sensitivity_work", 8, 0)
+            keep_float += [r["node"] for r in rows[:a.exclude_worst]]
+        rep["ort"] = quantize_ort(a.onnx, a.out, files, a.method, a.activation, a.min_images, nodes_to_exclude=keep_float or None)
         rep["output_similarity"] = compare_outputs(a.onnx, a.out, files)
     if a.rknn_script:
         rep["rknn_script"] = str(rknn_convert(a.onnx, Path(a.calib) / "dataset.txt", a.rknn_out or "apollo_int8.rknn", a.rknn_script,
@@ -172,7 +212,7 @@ def register(sub) -> None:
     e.add_argument("--conf", type=float, default=0.25)
     e.add_argument("--device", default="cpu")
     e.add_argument("--limit", type=int)
-    e.add_argument("--require", action="store_true", help="exit 1 unless map50 > 0.90 and kp_ap_oks50 > 0.85")
+    e.add_argument("--require", action="store_true", help="exit 1 unless map50 > 0.90, kp_ap_oks50 > 0.85 and aim_ap50 > 0.85")
     e.set_defaults(fn=_cmd_eval)
 
     x = ds.add_parser("export", help="checkpoint -> deploy ONNX (reparameterized, parity-checked against PyTorch)")
@@ -198,11 +238,34 @@ def register(sub) -> None:
     q.add_argument("--method", default="percentile", choices=["minmax", "entropy", "percentile"])
     q.add_argument("--activation", default="uint8", choices=["uint8", "int8"])
     q.add_argument("--min-images", dest="min_images", type=int, default=500)
+    q.add_argument("--exclude", nargs="*", help="Conv node names kept in float (mixed precision)")
+    q.add_argument("--exclude-worst", dest="exclude_worst", type=int, default=0,
+                   help="keep the N most quantization-sensitive convolutions in float (runs `detector sensitivity` first)")
     q.add_argument("--rknn-script", dest="rknn_script", help="write the rknn-toolkit2 conversion script here")
     q.add_argument("--rknn-out", dest="rknn_out")
     q.add_argument("--platform", default="rk3588")
     q.add_argument("--rknn-algorithm", dest="rknn_algorithm", default="mmse", choices=["normal", "mmse", "kl_divergence"])
     q.set_defaults(fn=_cmd_quantize)
+
+    sn = ds.add_parser("sensitivity", help="rank convolutions by how much INT8 hurts them (mixed-precision candidates)")
+    sn.add_argument("--onnx", required=True)
+    sn.add_argument("--calib", required=True)
+    sn.add_argument("--work", default="sensitivity_work")
+    sn.add_argument("--n-images", dest="n_images", type=int, default=8)
+    sn.add_argument("--top", type=int, default=15)
+    sn.set_defaults(fn=_cmd_sensitivity)
+
+    qa = ds.add_parser("qat", help="quantization-aware fine-tuning of a trained checkpoint -> QDQ ONNX")
+    qa.add_argument("--ckpt", required=True)
+    qa.add_argument("--data", nargs="+", required=True)
+    qa.add_argument("--out", required=True)
+    qa.add_argument("--epochs", type=int, default=5)
+    qa.add_argument("--lr", type=float, default=1e-4)
+    qa.add_argument("--batch-size", dest="batch_size", type=int, default=16)
+    qa.add_argument("--calib-batches", dest="calib_batches", type=int, default=8)
+    qa.add_argument("--workers", type=int, default=2)
+    qa.add_argument("--device", default="auto")
+    qa.set_defaults(fn=_cmd_qat)
 
     b = ds.add_parser("bench", help="MACs, napkin NPU budget, host CPU latency, on-device RKNN benchmark script")
     b.add_argument("--ckpt")

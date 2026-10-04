@@ -130,7 +130,7 @@ class DetectionLoss:
         tss = tscore.sum().clamp(min=1.0)
         l_cls = F.binary_cross_entropy_with_logits(cls, tscore, reduction="sum") / tss
         zero = cls.sum() * 0.0
-        l_box = l_kp = l_ks = l_vis = zero
+        l_box = l_kp = l_l1 = l_ks = l_vis = zero
         if fg.any():
             bi, ai = fg.nonzero(as_tuple=True)
             gi = gt_idx[bi, ai]
@@ -145,48 +145,72 @@ class DetectionLoss:
             e = d2 / (2.0 * area[:, None] * k2[None] + 1e-9)
             sim = torch.exp(-e)
             wk = self.weights.to(cls.device)[None] * lab
-            l_kp = (((1.0 - sim) * wk).sum(-1) / wk.sum(-1).clamp(min=1e-6) * w).sum() / tss
+            wsum = wk.sum(-1).clamp(min=1e-6)
+            l_kp = (((1.0 - sim) * wk).sum(-1) / wsum * w).sum() / tss
+            # OKS saturates: for a tight sigma (the aim point's) the gradient vanishes a few pixels away from the target, so
+            # a point that starts far off never converges. A distance term in units of person height always has a gradient.
+            hgt = (tb[:, 3] - tb[:, 1]).clamp(min=1.0)
+            dist = torch.sqrt(d2 + 1e-6) / hgt[:, None]
+            l_l1 = ((F.smooth_l1_loss(dist, torch.zeros_like(dist), reduction="none", beta=0.02) * wk).sum(-1) / wsum * w).sum() / tss
             ks_t = sim.detach()
             l_ks = (F.binary_cross_entropy_with_logits(kscore[bi, ai], ks_t, reduction="none") * lab).sum(-1) / lab.sum(-1).clamp(min=1)
             l_ks = (l_ks * w).sum() / tss
             vt = (tk[..., 2] == 2).float()
             l_vis = (F.binary_cross_entropy_with_logits(kvis[bi, ai], vt, reduction="none") * lab).sum(-1) / lab.sum(-1).clamp(min=1)
             l_vis = (l_vis * w).sum() / tss
-        total = c.w_cls * l_cls + c.w_box * l_box + c.w_kp * l_kp + c.w_kp_score * l_ks + c.w_vis * l_vis
-        return total, {"cls": l_cls.detach(), "box": l_box.detach(), "kp": l_kp.detach(), "kp_score": l_ks.detach(),
-                       "vis": l_vis.detach()}
+        total = c.w_cls * l_cls + c.w_box * l_box + c.w_kp * l_kp + c.w_kp_l1 * l_l1 + c.w_kp_score * l_ks + c.w_vis * l_vis
+        return total, {"cls": l_cls.detach(), "box": l_box.detach(), "kp": l_kp.detach(), "kp_l1": l_l1.detach(),
+                       "kp_score": l_ks.detach(), "vis": l_vis.detach()}
 
     # ---- aim heatmap ----
     def heat_loss(self, ref: torch.Tensor, tg: dict) -> torch.Tensor:
-        """CenterNet focal loss on the stride-4 heatmap + L1 on the sub-cell offset at the GT cell, primary keypoints only."""
+        """CenterNet focal loss on the stride-4 heatmap + L1 on the sub-cell offset at the centre cell, primary keypoints only.
+        Vectorized over all (image, object, primary point) triples."""
         P = len(self.primary)
         B, _, H, W = ref.shape
         stride = self.lay.refine_stride
-        hm_t = torch.zeros(B, P, H, W, device=ref.device)
-        off_t = torch.zeros(B, 2 * P, H, W, device=ref.device)
-        off_m = torch.zeros(B, P, H, W, device=ref.device)
-        gy, gx = torch.meshgrid(torch.arange(H, device=ref.device), torch.arange(W, device=ref.device), indexing="ij")
+        dev = ref.device
         gt_kp, gt_box, valid = tg["kpts"], tg["boxes"], tg["valid"]
-        for b in range(B):
-            for m in torch.nonzero(valid[b]).flatten().tolist():
-                h_px = float(gt_box[b, m, 3] - gt_box[b, m, 1])
-                sig = max(1.0, 0.04 * h_px / stride)
-                for pi, kp in enumerate(self.primary):
-                    x, y, v = gt_kp[b, m, kp]
-                    if v <= 0:
-                        continue
-                    cx, cy = x / stride - 0.5, y / stride - 0.5                              # continuous cell coordinates
-                    g = torch.exp(-((gx - cx) ** 2 + (gy - cy) ** 2) / (2 * sig ** 2))
-                    hm_t[b, pi] = torch.maximum(hm_t[b, pi], g * (1.0 if v == 2 else 0.6))
-                    ix, iy = int(torch.clamp(torch.round(cx), 0, W - 1)), int(torch.clamp(torch.round(cy), 0, H - 1))
-                    off_t[b, pi, iy, ix], off_t[b, P + pi, iy, ix] = cx - ix, cy - iy
-                    off_m[b, pi, iy, ix] = 1.0
-        logit = ref[:, :P]
-        p = logit.sigmoid().clamp(1e-4, 1 - 1e-4)
-        pos = hm_t.ge(0.999).float()
-        l_pos = -(((1 - p) ** 2) * torch.log(p) * pos).sum()
-        l_neg = -(((1 - hm_t) ** 4) * (p ** 2) * torch.log(1 - p) * (1 - pos)).sum()
-        n_pos = pos.sum().clamp(min=1.0)
+        bi, mi = torch.nonzero(valid, as_tuple=True)
+        hm_t = torch.zeros(B * P, H * W, device=dev)
+        off_t = torch.zeros(B, 2 * P, H, W, device=dev)
+        off_m = torch.zeros(B, P, H, W, device=dev)
+        pos_w = torch.zeros(B, P, H, W, device=dev)
+        if len(bi):
+            ent_b, ent_p, ent_x, ent_y, ent_v, ent_h = [], [], [], [], [], []
+            for pi, kp in enumerate(self.primary):
+                k = gt_kp[bi, mi, kp]                                                 # (N, 3)
+                ok = k[:, 2] > 0
+                ent_b.append(bi[ok])
+                ent_p.append(torch.full_like(bi[ok], pi))
+                ent_x.append(k[ok, 0])
+                ent_y.append(k[ok, 1])
+                ent_v.append(k[ok, 2])
+                ent_h.append((gt_box[bi, mi, 3] - gt_box[bi, mi, 1])[ok])
+            eb, ep, ex, ey, ev, eh = (torch.cat(t) for t in (ent_b, ent_p, ent_x, ent_y, ent_v, ent_h))
+            if len(eb):
+                cx, cy = ex / stride - 0.5, ey / stride - 0.5                          # continuous cell coordinates
+                ix = torch.round(cx).clamp(0, W - 1).long()
+                iy = torch.round(cy).clamp(0, H - 1).long()
+                sig = (0.04 * eh / stride).clamp(min=1.0)
+                wt = torch.where(ev == 2, 1.0, 0.6)                                   # an occluded aim point is a softer target
+                gy, gx = torch.meshgrid(torch.arange(H, device=dev), torch.arange(W, device=dev), indexing="ij")
+                gx, gy = gx.reshape(-1).float(), gy.reshape(-1).float()
+                for lo in range(0, len(eb), 256):                                       # chunked: N x H x W floats
+                    sl = slice(lo, lo + 256)
+                    # the Gaussian is centred on the INTEGER cell: its peak is exactly 1 there, the sub-cell remainder is what
+                    # the offset channels learn
+                    g = torch.exp(-((gx[None] - ix[sl, None]) ** 2 + (gy[None] - iy[sl, None]) ** 2) / (2 * sig[sl, None] ** 2))
+                    hm_t.scatter_reduce_(0, (eb[sl] * P + ep[sl])[:, None].expand(-1, H * W), g * wt[sl, None], reduce="amax")
+                off_t[eb, ep, iy, ix] = cx - ix
+                off_t[eb, P + ep, iy, ix] = cy - iy
+                off_m[eb, ep, iy, ix] = 1.0
+                pos_w[eb, ep, iy, ix] = wt
+        hm_t = hm_t.view(B, P, H, W)
+        p = ref[:, :P].sigmoid().clamp(1e-4, 1 - 1e-4)
+        l_pos = -(((1 - p) ** 2) * torch.log(p) * pos_w).sum()
+        l_neg = -(((1 - hm_t) ** 4) * (p ** 2) * torch.log(1 - p) * (1 - off_m)).sum()
+        n_pos = off_m.sum().clamp(min=1.0)
         l_off = ((ref[:, P:2 * P] - off_t[:, :P]).abs() * off_m).sum() + ((ref[:, 2 * P:3 * P] - off_t[:, P:]).abs() * off_m).sum()
         return (l_pos + l_neg) / n_pos + l_off / n_pos
 

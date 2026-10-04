@@ -173,3 +173,52 @@ def test_a_schema_that_exists_only_as_a_toml_file_runs_the_same_loop(tmp_path):
     f.write_text(TINY.replace('"copy(l_wrist)"', '"copy(l_wristt)"'))
     assert run_cli("collect", "--game", "mock", "--frames", "5", "--out", str(tmp_path / "x"), "--no-doctor",
                    "--schema", str(f)) == 4
+
+
+def test_the_12_point_schema_works_through_the_real_wire_protocol_with_team_meta(tmp_path):
+    """Everything above ran in-process. A real game talks through the mailbox protocol: the mod reports 13 rig points, the core
+    derives the 12 target points, and the team arrives as entity meta over the wire."""
+    import threading
+
+    from dataopen.adapters.mock.server import MockServerOptions, serve_mock
+    box = tmp_path / "box"
+    box.mkdir()
+    stop = threading.Event()
+    t = threading.Thread(target=serve_mock, args=(box, MockServerOptions(variant="shooter"), stop), daemon=True)
+    t.start()
+    try:
+        out = tmp_path / "ds"
+        code = run_cli("collect", "--game", "mock_shooter", "--mailbox", str(box), "--frames", "24", "--out", str(out),
+                       "--quality-sim", "--adaptive", "--no-doctor", "--seed", "4")
+        assert code == EXIT_OK
+        rs = recs(out)
+        assert len(rs) == 24 and all(len(a["keypoints"]) == 36 for r in rs for a in r["annotations"])
+        assert {a["class_id"] for r in rs for a in r["annotations"]} == {0, 1}              # team crossed the wire
+        assert all(r["meta"]["quality"]["metrics"]["evaluated"] for r in rs)
+        assert any(a["meta"].get("team") in ("ct", "t") for r in rs for a in r["annotations"])
+    finally:
+        stop.set()
+        t.join(5)
+
+
+def test_doctor_checks_the_derived_points_the_head_geometry_and_the_team(tmp_path):
+    from dataopen.adapters.mock import MockGameAdapter
+    from dataopen.core.doctor import run_doctor
+    ok = run_doctor(MockGameAdapter(160, 160, variant="shooter"), tmp_path / "a", frames=3, target="shooter12")
+    st = {c.name: c.status for c in ok.checks}
+    assert ok.ok and st["target_schema"] == st["target_points"] == st["head_geometry"] == st["class_source"] == "PASS"
+    assert st["aim_above_neck"] == "PASS" and (tmp_path / "a" / "doctor" / "overlay_target_0.png").exists()
+    # a rig whose head offset constant is wrong is called out with the parameter to fix
+    bad = run_doctor(MockGameAdapter(160, 160, variant="shooter"), tmp_path / "b", frames=3, target="shooter12",
+                     target_params={"head_top_offset_m": 0.6})
+    chk = next(c for c in bad.checks if c.name == "head_geometry")
+    assert chk.status == "WARN" and "head_top_offset_m" in chk.hint
+    # a game that reports no team labels everybody class 0: the doctor says so
+    noteam = run_doctor(MockGameAdapter(160, 160), tmp_path / "c", frames=3, target="shooter12")
+    chk = next(c for c in noteam.checks if c.name == "class_source")
+    assert chk.status == "WARN" and "team" in chk.hint
+    # a schema that cannot be derived from the mod's skeleton is a FAIL with a reason, not a traceback
+    f = tmp_path / "x.toml"
+    f.write_text(TINY.replace("copy(l_wrist)", "copy(l_wristt)"))
+    broken = run_doctor(MockGameAdapter(160, 160), tmp_path / "d", frames=2, target=str(f))
+    assert not broken.ok and any(c.name == "target_schema" and c.status == "FAIL" for c in broken.checks)

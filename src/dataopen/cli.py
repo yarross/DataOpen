@@ -56,7 +56,8 @@ def _cmd_games(a) -> int:
 def _cmd_doctor(a) -> int:
     prof = load_profile(a.game)
     adapter = build_adapter(prof, a.mailbox, connect=False)
-    rep = run_doctor(adapter, Path(a.out), frames=a.frames, tol_px=a.tolerance, seed=a.seed)
+    rep = run_doctor(adapter, Path(a.out), frames=a.frames, tol_px=a.tolerance, seed=a.seed,
+                     target=a.schema or prof.schema.get("target"), target_params=prof.schema.get("params"))
     print(rep.render())
     print(f"\nOverlays and doctor_report.json: {Path(a.out) / 'doctor'}")
     return EXIT_OK if rep.ok else EXIT_FAILED_CHECK
@@ -73,6 +74,8 @@ def _quality_spec(profile_quality: dict, a) -> dict:
         spec["device"] = a.quality_device
     if a.quality_sim:
         spec.update(enabled=True, evaluator="simulated")
+    if getattr(a, "quality_runtime", False):
+        spec["runtime"] = True
     if a.quality_static:
         spec.update(enabled=True, evaluator="none")
     if a.quality_inflight is not None:
@@ -139,7 +142,8 @@ def _cmd_collect(a) -> int:
     adapter = build_adapter(prof, a.mailbox, connect=False)
     if not a.no_doctor:
         tmp = Path(tempfile.mkdtemp(prefix="dataopen-doctor-"))
-        rep = run_doctor(adapter, tmp, frames=3, seed=a.seed)
+        rep = run_doctor(adapter, tmp, frames=3, seed=a.seed, target=a.schema or prof.schema.get("target"),
+                         target_params=prof.schema.get("params"))
         if not rep.ok:
             print(rep.render())
             print(f"\nRefusing to collect: the integration check failed. Fix the FAIL items "
@@ -288,6 +292,7 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--frames", type=int, default=6)
     d.add_argument("--tolerance", type=float, default=3.0, help="projection probe tolerance, pixels")
     d.add_argument("--seed", type=int, default=0)
+    d.add_argument("--schema", help="also check this target keypoint schema (derived points, head geometry, team): shooter12 or a .toml")
     d.set_defaults(fn=_cmd_doctor)
 
     c = sub.add_parser("collect", help="collect a dataset")
@@ -308,6 +313,8 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--quality-format", choices=["yolov8_pose", "dfine", "table", "apollo"])
     q.add_argument("--quality-device", choices=["cpu", "cuda", "tensorrt", "directml"])
     q.add_argument("--quality-sim", action="store_true", help="simulated detector (test double; peeks at the labels)")
+    q.add_argument("--quality-runtime", action="store_true",
+                   help="score frames through the production inference runtime (docs/RUNTIME.md), not the research path")
     q.add_argument("--quality-static", action="store_true", help="cheap gates only: no model")
     q.add_argument("--quality-inflight", type=int, help="frames validated while the engine renders the next ones")
     q.add_argument("--quality-every", type=int, help="run the model on every N-th frame")
@@ -363,6 +370,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     from .detector.cli import register as register_detector
     register_detector(sub)
+    from .runtime.cli import register as register_runtime
+    register_runtime(sub)
     return p
 
 

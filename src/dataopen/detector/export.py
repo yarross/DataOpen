@@ -76,6 +76,7 @@ def export_onnx(model: ApolloDetector, layout: HeadLayout, out: str | Path, inpu
         e = m.metadata_props.add()
         e.key, e.value = k, v
     onnx.save(m, str(out))
+    out.with_suffix(".layout.json").write_text(layout.to_json())     # the .rknn conversion has no metadata: the runtime reads this
     res = {"path": str(out), "outputs": names, "input": in_name, "opset": opset, "size_mb": round(out.stat().st_size / 1e6, 3)}
     if check:
         import onnxruntime as ort

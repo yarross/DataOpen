@@ -440,7 +440,7 @@ function H.hello(rt, p)
   for i = 1, #kps do rt.keypoints[i] = kps[i] end
   rt.state = { handles = {}, frames = 0, frozen = false }
   rt:unfreeze()
-  if host.init then host.init(rt.options, rt) end
+  if host.init then host.init(rt.options, rt, p.image) end
 
   local errors = J.array({})
   for _, rig in ipairs(host.rigs and host.rigs() or {}) do
@@ -493,9 +493,18 @@ function Runtime:make_probes(cam_m, skeletons, w, h)
     local o = (hi - 1) * 3
     pts[#pts + 1] = { x = sk[o + 1], y = sk[o + 2], z = sk[o + 3] }
   end
+  local eng = {}
+  for i, pt in ipairs(pts) do eng[i] = { x = pt.x / s, y = pt.y / s, z = pt.z / s } end
+  local uvs = {}
+  if host.project_batch then
+    -- engines that can only project inside a render hook (Garry's Mod ToScreen) answer in one batch
+    uvs = host.project_batch(eng, w, h, self) or {}
+  else
+    for i = 1, #eng do uvs[i] = host.project(eng[i], w, h) or false end
+  end
   local probes = J.array({})
-  for _, pt in ipairs(pts) do
-    local uv = host.project({ x = pt.x / s, y = pt.y / s, z = pt.z / s }, w, h)
+  for i, pt in ipairs(pts) do
+    local uv = uvs[i]
     probes[#probes + 1] = { world = J.array({ pt.x, pt.y, pt.z }),
                             screen = uv and J.array({ uv.x or uv[1], uv.y or uv[2] }) or nil }
   end

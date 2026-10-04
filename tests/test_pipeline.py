@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from dataopen.adapters.mock import MockGameAdapter
-from dataopen.core.annotation import AnnotationBuilder, Verdict
+from dataopen.core.annotation import AnnotationBuilder
 from dataopen.core.models import CaptureRequest, FrameKind
 from dataopen.core.orchestrator import DatasetOrchestrator, SessionConfig
 from dataopen.core.projection import project

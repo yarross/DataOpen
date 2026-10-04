@@ -16,7 +16,7 @@ import numpy as np
 
 from .annotation import AnnotationBuilder
 from .calibration import check_probes, diagnose
-from .imageio import read_image, read_image_size, write_png
+from .imageio import read_image, write_png
 from .interfaces import AdapterError, IGameAdapter
 from .models import CaptureRequest, FrameKind
 from .projection import project
@@ -169,9 +169,10 @@ def run_doctor(adapter: IGameAdapter, out_dir: Path, frames: int = 6, tol_px: fl
                             seg_vals.setdefault((a, b, lo, hi), []).append(
                                 float(np.linalg.norm(e.skeleton_world[ia] - e.skeleton_world[ib])))
                 fwd = e.meta.get("forward")
-                if fwd is not None and "l_shoulder" in schema.keypoints and e.joint_valid[[schema.index("l_shoulder"), schema.index("r_shoulder")]].all():
+                lr = [schema.index("l_shoulder"), schema.index("r_shoulder")] if "l_shoulder" in schema.keypoints else None
+                if fwd is not None and lr is not None and e.joint_valid[lr].all():
                     d = float(np.dot(np.asarray(fwd, dtype=float), cam_fwd))
-                    uv, z = project(e.skeleton_world[[schema.index("l_shoulder"), schema.index("r_shoulder")]], cam)
+                    uv, z = project(e.skeleton_world[lr], cam)
                     if abs(d) > 0.3 and (z > cam.near).all() and abs(uv[0, 0] - uv[1, 0]) > 4:
                         left_is_right_of_screen = uv[0, 0] > uv[1, 0]
                         if left_is_right_of_screen == (d < 0):   # facing the camera => left appears on screen-right

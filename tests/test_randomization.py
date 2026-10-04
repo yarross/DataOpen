@@ -1,7 +1,7 @@
 import numpy as np
 
 from dataopen.core.randomization import (Categorical, DomainRandomizationController, LogUniform,
-                                         ParameterSpace, derive_seed, latin_hypercube)
+                                         derive_seed, latin_hypercube)
 from dataopen.core.models import FrameKind
 from dataopen.adapters.mock import MockGameAdapter
 

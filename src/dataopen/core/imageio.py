@@ -140,5 +140,5 @@ def read_image(path: Path) -> np.ndarray:
     except ImportError:
         data = path.read_bytes()
         if data[:8] != b"\x89PNG\r\n\x1a\n":
-            raise RuntimeError("reading JPEG needs Pillow: pip install 'dataopen[capture]'")
+            raise RuntimeError("reading JPEG needs Pillow: pip install 'dataopen[capture]'") from None
         return _read_png(data)

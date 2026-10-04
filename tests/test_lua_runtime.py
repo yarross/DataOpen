@@ -81,7 +81,8 @@ def make(flavor, tmp_path, host_opts=None, runtime_opts=None, **remote):
     mb = tmp_path / "mb"
     (mb / "staging").mkdir(parents=True)
     g = LuaGame(flavor, mb, {"png": png_bytes(tmp_path), **(host_opts or {})}, runtime_opts)
-    a = RemoteGameAdapter(FileMailboxTransport(mb, default_timeout_s=10), RemoteOptions(call_timeout_s=10, capture_timeout_s=10, **remote))
+    opts = RemoteOptions(call_timeout_s=10, capture_timeout_s=10, **remote)
+    a = RemoteGameAdapter(FileMailboxTransport(mb, default_timeout_s=10), opts)
     return g, a
 
 
@@ -98,9 +99,9 @@ def test_json_roundtrip_and_edge_cases(flavor):
     assert dec["s"] == "é€😀\u0001"                                       # \u escapes + surrogate pair -> UTF-8
     assert dec["n"][3]["x"] is None                                    # null -> nil
     for bad in ('{"a":', '[1,2', '{"a" 1}', 'nope', '[1,]x'):
-        with pytest.raises(Exception):
+        with pytest.raises(Exception, match="unterminated|expected|unexpected|trailing|bad|number"):
             J.decode(bad)
-    with pytest.raises(Exception):
+    with pytest.raises(Exception, match="non-finite"):
         J.encode(lua.eval("{x = 0/0}"))                                # NaN is not JSON
     assert J.encode(J.array(lua.table())) == "[]" and J.encode(lua.table()) == "{}"
 
@@ -173,7 +174,7 @@ def test_runtime_timeout_when_the_engine_never_finishes(flavor, tmp_path):
         from dataopen.core.randomization import DomainRandomizationController
         rz = DomainRandomizationController(0, a.parameter_space())
         scene = rz.sample_scene(0)
-        h = a.spawner.spawn(scene)
+        a.spawner.spawn(scene)
         from dataopen.core.models import FrameKind
         spec = rz.sample_frame(scene, 0, FrameKind.POSITIVE)
         with pytest.raises(RemoteError, match="timed out"):

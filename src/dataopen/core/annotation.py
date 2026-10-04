@@ -46,7 +46,6 @@ class AnnotationBuilder:
 
     def build(self, snap: FrameSnapshot) -> BuildResult:
         res = BuildResult()
-        cam = snap.camera
         if snap.depth is None and any(e.engine_visibility is None for e in snap.entities):
             res.warnings.append("no occlusion source: in-frame joints reported as visible")
         for ent in snap.entities:

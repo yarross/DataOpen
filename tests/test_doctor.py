@@ -1,8 +1,6 @@
-import json
 import threading
 from pathlib import Path
 
-import pytest
 
 from dataopen.adapters.mock import MockGameAdapter
 from dataopen.adapters.mock.server import MockServerOptions, serve_mock

@@ -239,7 +239,8 @@ class DatasetOrchestrator:
             raise CalibrationError(
                 f"the engine's projection disagrees with the reported camera on {self._probe_streak} frames in a row "
                 f"(max error {res.max_err:.1f}px, median {res.median_err:.1f}px, tolerance "
-                f"{self.cfg.probe_tolerance_px}px). Likely cause: {diagnose(res, cam.width, cam.height, self.cfg.probe_tolerance_px)}")
+                f"{self.cfg.probe_tolerance_px}px). Likely cause: "
+                f"{diagnose(res, cam.width, cam.height, self.cfg.probe_tolerance_px)}")
         return "projection_probe_mismatch"
 
     def _run_scene(self, scene: SceneSpec, rep: SessionReport, t0: float, max_attempts: int,

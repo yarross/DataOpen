@@ -1,0 +1,24 @@
+name: ci
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev,capture]' tree-sitter tree-sitter-c-sharp
+      - name: Lint
+        run: ruff check src tests
+      - name: Tests (core, protocol, Lua on 5.1/5.4/LuaJIT, GMod host stub, C# syntax)
+        run: python -m pytest -q

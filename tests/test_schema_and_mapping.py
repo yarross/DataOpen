@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 from dataopen.adapters.mock.adapter import RIG_A
-from dataopen.core.schema import HUMAN_13, BoneMapping, SkeletonSchema
+from dataopen.core.schema import HUMAN_13, SkeletonSchema
 
 
 def test_flip_idx_is_an_involution_swapping_left_right():

@@ -131,7 +131,9 @@ class FakeInner:
     def connect(self): self.calls.append("connect")
     def close(self): self.calls.append("close")
     def restart(self): self.calls.append("restart")
-    def spawn(self, scene): self.calls.append("spawn"); return ["h"]
+    def spawn(self, scene):
+        self.calls.append("spawn")
+        return ["h"]
     def update_actors(self, h, f): self.calls.append("update")
     def set_active(self, h, a): self.calls.append(f"active={a}")
     def despawn_all(self): self.calls.append("despawn")

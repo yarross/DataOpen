@@ -117,7 +117,6 @@ def test_engine_mode_rejected_if_mod_lacks_image_engine(mailbox):
 
 
 def test_schema_mismatch_is_reported_by_the_mod(tmp_path):
-    from dataopen.core.schema import SkeletonSchema
     g = MockGameServer()
     res = g.handle("hello", {"schema": {"keypoints": ["a", "b"]}})
     assert res["schema_errors"] and "mismatch" in res["schema_errors"][0]
@@ -126,7 +125,7 @@ def test_schema_mismatch_is_reported_by_the_mod(tmp_path):
 def test_not_connected_adapter_gives_a_clear_error(tmp_path):
     a = RemoteGameAdapter(FileMailboxTransport(tmp_path))
     with pytest.raises(AdapterError, match="connect"):
-        a.info
+        _ = a.info
     with pytest.raises(AdapterError, match="connect"):
         a.parameter_space()
 

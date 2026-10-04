@@ -9,10 +9,9 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Sequence
 
-from .models import (CaptureRequest, EntityHandle, EntityState, FrameSnapshot, SceneSpec, FrameSpec,
-                     SpawnArea)
+from .models import (CaptureRequest, EntityHandle, EntityState, FrameSnapshot, SceneSpec, FrameSpec)
 from .randomization import AdapterParameterSpace
 from .schema import BoneMapping, SkeletonSchema
 

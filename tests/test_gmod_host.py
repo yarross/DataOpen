@@ -1,7 +1,6 @@
 """Runs the real Garry's Mod loader + host + shared runtime on LuaJIT (what GMod embeds) against an API stub
 that enforces GMod's hook-only rendering rules, driven by the real Python core over the real mailbox."""
 import importlib
-import json
 import threading
 import time
 from pathlib import Path

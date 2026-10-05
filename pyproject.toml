@@ -19,7 +19,7 @@ train = ["torch>=2.2", "pillow>=10", "onnx", "onnxruntime>=1.17"]   # the detect
 where = ["src"]
 
 [tool.setuptools.package-data]
-dataopen = ["game_profiles/*.toml", "schemas/*.toml", "detector/csrc/*"]
+dataopen = ["game_profiles/*.toml", "schemas/*.toml", "detector/csrc/*", "assist/csrc/*"]
 
 [project.scripts]
 dataopen = "dataopen.cli:main"

@@ -215,6 +215,15 @@ class ProfileView:
     def generation(self) -> int:
         return self._state.generation
 
+    @property
+    def deg_per_count(self) -> float:
+        """Mouse sensitivity the profile was measured with (degrees per HID count); 0 when unknown."""
+        return self._state.deg_per_count
+
+    @property
+    def latency_comp_us(self) -> int:
+        return self._state.latency_comp_us
+
     def stat(self, name: str) -> Stat:
         if name not in STAT_INDEX:
             raise KeyError(f"unknown metric {name!r}; known: {', '.join(STAT_INDEX)}")

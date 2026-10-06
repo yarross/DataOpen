@@ -161,7 +161,8 @@ def test_boxes_are_assigned_to_the_scale_that_fits_them_and_a_tiny_box_still_get
         if lv == 2:
             assert 2 in found and 0 not in found
     ct, _ = assign(boxes, cls, 80, 80, 8, 0, len(NAMES))
-    assert (ct == 7).sum() == 1  # the 2.5 px box: exactly the cell holding its centre
+    n7 = int((ct == 7).sum())
+    assert 1 <= n7 <= 9 and ct[1, 1] == 7  # the 2.5 px box: the cells around its centre, including the one holding it
 
 
 def test_the_loss_is_finite_has_gradients_and_handles_empty_screens():

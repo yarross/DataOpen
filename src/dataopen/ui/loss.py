@@ -5,6 +5,7 @@ from __future__ import annotations
 import torch
 
 from .model import STRIDES, decode_boxes, grid_centers
+from .taxonomy import ID
 
 LEVEL_MAX_SIDE = (40.0, 120.0, 1e9)  # which stride handles a box, by its longer side in input pixels
 LEVEL_MIN_SIDE = (0.0, 24.0, 80.0)  # (with overlap, so a box near a boundary has positives on both levels)
@@ -45,8 +46,11 @@ def assign(gt_boxes: torch.Tensor, gt_cls: torch.Tensor, h: int, w: int, stride:
         rx, ry = max(1.5 * stride, 0.2 * (x1 - x0)), max(1.5 * stride, 0.2 * (y1 - y0))
         inside = (c[..., 0] > x0) & (c[..., 0] < x1) & (c[..., 1] > y0) & (c[..., 1] < y1)
         near = ((c[..., 0] - gx).abs() < rx) & ((c[..., 1] - gy).abs() < ry)
-        pos = inside & near
-        if not bool(pos.any()):  # tiny box: the cell that holds its centre
+        if max(x1 - x0, y1 - y0) < 2 * stride:                    # a tiny box (the pointer): the cells around its centre, not one
+            pos = ((c[..., 0] - gx).abs() < 1.5 * stride) & ((c[..., 1] - gy).abs() < 1.5 * stride)
+        else:
+            pos = inside & near
+        if not bool(pos.any()):                                  # still nothing: the cell that holds its centre
             ix, iy = int(min(max(gx // stride, 0), w - 1)), int(min(max(gy // stride, 0), h - 1))
             pos = torch.zeros((h, w), dtype=torch.bool, device=dev)
             pos[iy, ix] = True
@@ -63,9 +67,15 @@ def focal_bce(logits: torch.Tensor, target: torch.Tensor, gamma: float = 2.0, al
     return a * (1 - pt) ** gamma * ce
 
 
+CURSOR_WEIGHT = 3.0          # the pointer is tiny and everything downstream depends on finding it
+
+
 def ui_loss(outs: list[torch.Tensor], gts: list[tuple[torch.Tensor, torch.Tensor]], n_cls: int, w_box: float = 2.0):
     """outs: per level (B, n_cls+4, H, W); gts: per image (boxes (n,4) xyxy in input pixels, classes (n,))."""
     cls_loss, box_loss, n_pos = 0.0, 0.0, 0
+    cw = torch.ones(n_cls)
+    if n_cls > ID["cursor"]:
+        cw[ID["cursor"]] = CURSOR_WEIGHT
     for lv, (raw, stride) in enumerate(zip(outs, STRIDES)):
         b, _, h, w = raw.shape
         logits = raw[:, :n_cls].permute(0, 2, 3, 1)
@@ -78,6 +88,6 @@ def ui_loss(outs: list[torch.Tensor], gts: list[tuple[torch.Tensor, torch.Tensor
                 target[i][pos, ct[pos]] = 1.0
                 box_loss = box_loss + (1.0 - giou(boxes[i][pos], bt[pos])).sum()
                 n_pos += int(pos.sum())
-        cls_loss = cls_loss + focal_bce(logits, target).sum()
+        cls_loss = cls_loss + (focal_bce(logits, target) * cw.to(logits.device)).sum()
     n = max(n_pos, 1)
     return (cls_loss + w_box * box_loss) / n, {"cls": float(cls_loss.detach()) / n, "box": float(box_loss.detach()) / n, "pos": n_pos}

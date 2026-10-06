@@ -376,6 +376,8 @@ def build_parser() -> argparse.ArgumentParser:
     register_bioprofile(sub)
     from .assist.cli import register as register_assist
     register_assist(sub)
+    from .bridge.cli import register as register_bridge
+    register_bridge(sub)
     return p
 
 

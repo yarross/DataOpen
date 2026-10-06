@@ -30,6 +30,7 @@ dataopen runtime bench --backend mock --fps 240 --duration 5       # runtime и�
 | [docs/BIOPROFILE.md](docs/BIOPROFILE.md) | BioProfile: персональный профиль биомеханики мыши (T_motor, флики, слежение, сценарии ошибок, усталость), компактная структура 98 байт, интерфейс чтения (`dataopen bioprofile ...`) |
 | [docs/ASSIST.md](docs/ASSIST.md) | Adaptive Sensitivity Correction: вязкая зона вокруг объекта для людей с тремором/перелётами (K ∈ [0.1, 1], guard до начала движения, профиль из BioProfile, fixed-point + C ядро) и односторонний подавитель дрожи 3–16 Гц (`dataopen assist ...`) |
 | [docs/BRIDGE.md](docs/BRIDGE.md) | Assistive HID Bridge: прозрачный USB-прокси мыши (все дескрипторы, кнопки и запросы как у настоящей мыши), правит только биты X/Y и только вычитанием; fail-safe (мягкий PASSTHRU без разрыва ввода, жёсткий аппаратный bypass, watchdog, Panic), SPI-протокол с модулем коррекции, симулятор установки (`dataopen bridge ...`) |
+| [docs/VIDEO.md](docs/VIDEO.md) | Video-путь: HDMI/DP passthrough на монитор без добавленной задержки (EDID байт в байт) и параллельный захват; потоковая подготовка кадра (цвет, кроп, area-даунскейл, letterbox 640×640), геометрия экран ↔ вход детектора, доставка в runtime; тайминги и честная задержка (`dataopen video ...`) |
 | [docs/PROTOCOL.md](docs/PROTOCOL.md) | протокол core ↔ мод для авторов модов |
 | [docs/MODDING.md](docs/MODDING.md) | как добавить игру |
 | [docs/GAMES.md](docs/GAMES.md) | выбор игр и чек-лист для новой |

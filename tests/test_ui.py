@@ -552,7 +552,7 @@ def test_frames_to_service_to_scene_frames_to_the_real_bridge_core_brake_the_app
             return [_det("button", target), _cursor(base_x + st.cum_x, base_y + st.cum_y)]
 
     src = QueueSource(4)
-    builder = UiSceneBuilder(GEOM_1080P)                                              # default warm-up: what is there from the start did not 'appear'
+    builder = UiSceneBuilder(GEOM_1080P)                                              # default warm-up: what is there from the start did not 'appear'  # noqa: E501
     pub = BridgeScenePublisher(builder, lambda f: r.module.send(r.t, [f]))
     svc = UiService(src, Gt(), builder, pub)
     ks = []

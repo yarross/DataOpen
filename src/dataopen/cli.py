@@ -380,6 +380,8 @@ def build_parser() -> argparse.ArgumentParser:
     register_bridge(sub)
     from .video.cli import register as register_video
     register_video(sub)
+    from .ui.cli import register as register_ui
+    register_ui(sub)
     return p
 
 

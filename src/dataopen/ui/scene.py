@@ -77,7 +77,7 @@ def iou(a, b) -> float:
 
 @dataclass
 class SceneConfig:
-    conf_target: float = 0.45  # minimum confidence of an element to be offered as a target
+    conf_target: float = 0.6  # minimum confidence of an element to be offered as a target (measured trade-off: docs/UIDET.md)
     conf_cursor: float = 0.4
     min_side_px: float = 8.0  # smaller than this on the screen: not a plausible element
     match_iou: float = 0.3

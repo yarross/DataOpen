@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Optional
 
 from .fixed import FixedParams, q
+from .tremor_fixed import FixedTremorParams
 from .types import Guard, ObjectOfInterest, Reason, TickOut
 
 CSRC = Path(__file__).resolve().parent / "csrc"
@@ -20,6 +21,22 @@ PARAM_FIELDS = ["enabled", "v_on", "v_still", "on_us", "still_us", "t_lo_us", "r
                 "mu", "c0", "inv_c", "k_floor", "s_cap", "lead_base", "lead_gain", "away_us", "away_ramp_us", "open_us", "open_ramp_us",
                 "w_att", "w_rel", "slew", "v_tau", "vp_tau", "gap_us"]
 assert PARAM_FIELDS == [f.name for f in fields(FixedParams)], "C param struct and FixedParams drifted"
+
+
+TREMOR_FIELDS = ["enabled", "a_lp", "a_band", "a_e", "s_max", "trim_cap", "v_t", "lp_weight", "eps", "r_lo", "inv_r", "big_lo", "inv_big",
+                 "reset_us", "reset_ms"]
+assert TREMOR_FIELDS == [f.name for f in fields(FixedTremorParams)], "C tremor param struct and FixedTremorParams drifted"
+
+
+class CTremorParams(ctypes.Structure):
+    _fields_ = [(n, ctypes.c_int32) for n in TREMOR_FIELDS]
+
+
+class CTremorState(ctypes.Structure):
+    _fields_ = [(n, ctypes.c_int64 * 2) for n in ("l1", "l2", "b1", "b2")] + [("e_band", ctypes.c_int64), ("e_lp", ctypes.c_int64),
+                                                                             ("last_t", ctypes.c_int64), ("carry", ctypes.c_int32 * 2),
+                                                                             ("zero_ms", ctypes.c_int32), ("s", ctypes.c_int32),
+                                                                             ("r", ctypes.c_int32), ("has_last", ctypes.c_int32)]
 
 
 class CParams(ctypes.Structure):
@@ -45,17 +62,17 @@ def build_library(out_dir: Optional[str | Path] = None, cc: Optional[str] = None
     compiler = cc or os.environ.get("CC") or shutil.which("cc") or shutil.which("gcc") or shutil.which("clang")
     if not compiler:
         raise RuntimeError("no C compiler found (set CC, or install gcc/clang)")
-    src = CSRC / "asc_core.c"
-    h = hashlib.blake2b(src.read_bytes() + (CSRC / "asc_core.h").read_bytes(), digest_size=6).hexdigest()
+    srcs = [CSRC / "asc_core.c", CSRC / "tremor_core.c"]
+    h = hashlib.blake2b(b"".join(p.read_bytes() for p in (*srcs, CSRC / "asc_core.h", CSRC / "tremor_core.h")), digest_size=6).hexdigest()
     out = Path(out_dir or Path(tempfile.gettempdir()) / "dataopen-asc")
     out.mkdir(parents=True, exist_ok=True)
     so = out / f"asc_core_{h}.so"
     if not so.exists():
         tmp = out / f"{so.name}.{os.getpid()}.tmp"
-        r = subprocess.run([compiler, "-O2", "-std=c99", "-Wall", "-Wextra", "-shared", "-fPIC", f"-I{CSRC}", "-o", str(tmp), str(src)],
-                           capture_output=True, text=True)
+        r = subprocess.run([compiler, "-O2", "-std=c99", "-Wall", "-Wextra", "-shared", "-fPIC", f"-I{CSRC}", "-o", str(tmp),
+                            *map(str, srcs)], capture_output=True, text=True)
         if r.returncode != 0:
-            raise RuntimeError(f"compiling asc_core.c failed:\n{r.stderr[:800]}")
+            raise RuntimeError(f"compiling the ASC / tremor C cores failed:\n{r.stderr[:800]}")
         tmp.replace(so)
     return so
 
@@ -89,3 +106,33 @@ class CAsc:
     @property
     def state_bytes(self) -> int:
         return ctypes.sizeof(CState)
+
+
+class CTremor:
+    """The C tremor suppressor behind the same interface as `FixedTremor`."""
+
+    def __init__(self, params: Optional[FixedTremorParams] = None, library: Optional[str | Path] = None) -> None:
+        self.lib = ctypes.CDLL(str(library or build_library()))
+        i32p = ctypes.POINTER(ctypes.c_int32)
+        self.lib.tremor_tick.argtypes = [ctypes.POINTER(CTremorParams), ctypes.POINTER(CTremorState), ctypes.c_int64, ctypes.c_int32,
+                                         ctypes.c_int32, i32p, i32p]
+        self.lib.tremor_reset.argtypes = [ctypes.POINTER(CTremorState)]
+        self.cp, self.st = CTremorParams(), CTremorState()
+        self.set_params(params or FixedTremorParams())
+        self.reset()
+
+    def set_params(self, params: FixedTremorParams) -> None:
+        for n in TREMOR_FIELDS:
+            setattr(self.cp, n, getattr(params, n))
+
+    def reset(self) -> None:
+        self.lib.tremor_reset(ctypes.byref(self.st))
+
+    def tick(self, t_us: int, dx: int, dy: int) -> tuple[int, int]:
+        ox, oy = ctypes.c_int32(), ctypes.c_int32()
+        self.lib.tremor_tick(ctypes.byref(self.cp), ctypes.byref(self.st), t_us, dx, dy, ctypes.byref(ox), ctypes.byref(oy))
+        return ox.value, oy.value
+
+    @property
+    def state_bytes(self) -> int:
+        return ctypes.sizeof(CTremorState)

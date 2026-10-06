@@ -95,7 +95,7 @@ def _mj_vel(tau: float) -> float:
 
 def run_trial(persona: Persona, asc: Optional[AdaptiveSensitivity], rng: np.random.Generator, dist_px: float = 600.0,
               radius_px: float = 30.0, px_per_count: float = 1.0, vis_delay_ms: int = 90, hold_ms: int = 500, max_ms: int = 3500,
-              trace: bool = False, record: Optional[list] = None) -> Trial:
+              trace: bool = False, record: Optional[list] = None, adapt: bool = True) -> Trial:
     """One reach along +x from the origin to a target `dist_px` away. With `asc` None the cursor moves 1:1 with the hand."""
     out = Trial()
     pos = np.zeros(2)
@@ -107,6 +107,7 @@ def run_trial(persona: Persona, asc: Optional[AdaptiveSensitivity], rng: np.rand
     tph = rng.uniform(0, 2 * math.pi)
     carry = np.zeros(2)
     sub: Optional[dict] = None
+    rho = 1.0                                   # the person's estimate of how much of an intended movement the cursor delivers
     next_plan = t_motor
     in_ms, k_sum, k_n, assisted = 0, 0.0, 0, 0
     acquire_t: Optional[int] = None
@@ -126,17 +127,21 @@ def run_trial(persona: Persona, asc: Optional[AdaptiveSensitivity], rng: np.rand
                 eps = rng.normal(persona.overshoot_mean if out.n_sub == 0 else 0.0,
                                  persona.overshoot_sigma if out.n_sub == 0 else persona.overshoot_sigma * 0.5)
                 eps = float(np.clip(eps, -0.4, 0.8))
-                amp = dist * (1 + eps) / px_per_count
+                gain = min(max(rho, 0.15), 1.0) if adapt else 1.0
+                amp = dist * (1 + eps) / (px_per_count * gain)
                 dur = max(60.0, (0.10 + 0.0035 * dist * persona.dpc * px_per_count) / persona.speed_factor * 1000.0)
                 if out.n_sub > 0:
                     dur = max(60.0, dur * 0.6)
-                sub = {"t0": ms, "dur": dur, "amp": amp, "dir": err / max(dist, 1e-9)}
+                sub = {"t0": ms, "dur": dur, "amp": amp, "dir": err / max(dist, 1e-9), "p0": pos.copy()}
                 out.n_sub += 1
             else:
                 next_plan = ms + 20                                   # looks done: keep watching
         if sub is not None:
             tau = (ms - sub["t0"]) / sub["dur"]
             if tau >= 1.0:
+                if adapt and sub["amp"] > 8:                           # people adapt to a changed gain: what did that movement deliver?
+                    got = float((pos - sub["p0"]) @ sub["dir"]) / (sub["amp"] * px_per_count)
+                    rho = 0.5 * rho + 0.5 * min(max(got, 0.05), 1.3)
                 sub = None
                 next_plan = ms + rng.uniform(60, 110) + vis_delay_ms
             else:
@@ -226,3 +231,22 @@ def compare(persona: Persona, n: int = 60, seed: int = 0, params=None, view: Opt
         asc = AdaptiveSensitivity(params)
         assisted.append(run_trial(persona, asc, np.random.default_rng(seed * 1000 + i), dist_px, radius_px))
     return summarize(base, radius_px), summarize(assisted, radius_px), view
+
+
+def compare_all(persona: Persona, n: int = 40, seed: int = 1, view: Optional[ProfileView] = None, dist_px: float = 600.0,
+                radius_px: float = 30.0) -> dict:
+    """The same hand under four conditions: nothing, ASC alone, tremor suppression alone, the chain (ASC then tremor suppression)."""
+    from .chain import AssistChain
+    from .params import AscParams
+    from .tremor import TremorParams
+    view = view or build_profile(persona, seed=seed)
+    ap, tp = AscParams.from_view(view), TremorParams.from_view(view)
+    makers = {"none": lambda: None,
+              "asc": lambda: AssistChain.build(ap, TremorParams.disabled(), "float"),
+              "tremor": lambda: AssistChain.build(AscParams.disabled(), tp, "float"),
+              "chain": lambda: AssistChain.build(ap, tp, "float")}
+    out = {}
+    for name, mk in makers.items():
+        out[name] = summarize([run_trial(persona, mk(), np.random.default_rng(seed * 1000 + i), dist_px, radius_px) for i in range(n)],
+                              radius_px)
+    return out

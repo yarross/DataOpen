@@ -26,6 +26,7 @@ UI_CLASSES = (
     UiClass(6, "window_control", True, "minimize / maximize / close buttons of a window"),
     UiClass(7, "cursor", False, "the mouse pointer (arrow, hand, I-beam)"),
 )
+STRIDES = (8, 16, 32)          # pyramid strides of the detector (shared by the network and the numpy decoder)
 NAMES = tuple(c.name for c in UI_CLASSES)
 TARGET_NAMES = frozenset(c.name for c in UI_CLASSES if c.target)
 ID = {c.name: c.id for c in UI_CLASSES}

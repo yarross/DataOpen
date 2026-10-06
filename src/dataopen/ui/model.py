@@ -14,7 +14,6 @@ from torch import nn
 
 from .taxonomy import NAMES
 
-STRIDES = (8, 16, 32)
 
 
 @dataclass

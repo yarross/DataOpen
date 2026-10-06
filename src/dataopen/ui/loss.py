@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import torch
 
-from .model import STRIDES, decode_boxes, grid_centers
+from .model import decode_boxes, grid_centers
+from .taxonomy import STRIDES
 from .taxonomy import ID
 
 LEVEL_MAX_SIDE = (40.0, 120.0, 1e9)  # which stride handles a box, by its longer side in input pixels

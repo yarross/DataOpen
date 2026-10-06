@@ -18,7 +18,7 @@ import numpy as np
 
 from ..runtime.frames import Frame, FrameSource
 from .infer import decode
-from .model import STRIDES
+from .taxonomy import STRIDES
 from .scene import Det, Snapshot, UiSceneBuilder
 from .taxonomy import NAMES, require_ui_layout  # noqa: F401
 

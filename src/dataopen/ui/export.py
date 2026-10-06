@@ -9,8 +9,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from .model import STRIDES, UiNet
-from .taxonomy import require_ui_layout
+from .model import UiNet
+from .taxonomy import STRIDES, require_ui_layout
 
 ALLOWED_OPS = {"Conv", "Relu", "Add", "Resize", "Concat", "Constant", "Cast", "Transpose", "Mul", "Identity"}
 

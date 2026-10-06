@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from ..quality.evaluators.decode import nms
-from .model import STRIDES
+from .taxonomy import STRIDES
 
 
 @dataclass(frozen=True)

@@ -37,4 +37,4 @@ jobs:
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install -e '.[dev,capture,train]'
       - name: Detector tests
-        run: python -m pytest -q tests/test_detector_host.py tests/test_detector_torch.py
+        run: python -m pytest -q tests/test_detector_host.py tests/test_detector_torch.py tests/test_ui_torch.py

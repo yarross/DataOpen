@@ -40,7 +40,7 @@ async function neutral(s) {                                   // back to 'help o
 test('connect: manifest, state and status all arrive', { skip }, async () => {
   const s = await open();
   assert.equal(s.conn, 'connected');
-  assert.equal(s.hello.fw, 'ctl-1');
+  assert.match(s.hello.fw, /^ctl-\d+$/);
   assert.ok(s.chunk > 20);
   assert.ok(s.manifest.pages.length >= 3);
   assert.equal(typeof s.state['assist.on'], 'boolean');
@@ -138,17 +138,47 @@ test('the device refuses what its manifest does not allow, with keyed errors', {
   s.close();
 });
 
-test('a settings file goes out and comes back, a damaged one is refused with a plain reason', { skip }, async () => {
+test('a copy sealed to this device goes out and comes back; damaged and old-format files are refused with plain reasons', { skip }, async () => {
   const s = await open();
   await neutral(s);
-  const raw = await s.getBundle();
-  assert.ok(raw.length > 100 && raw.length < 400);
-  assert.equal(String.fromCharCode(...raw.slice(0, 4)), 'DOBN');
+  const raw = await s.getBundle('self');
+  assert.equal(String.fromCharCode(...raw.slice(0, 4)), 'DOBS');
+  assert.ok(raw.length > 300 && raw.length < 2000);
+  assert.ok(!String.fromCharCode(...raw).includes('BIOP'));              // nothing readable in it
   assert.equal((await s.putBundle(raw)).json.ok, true);
   const bad = raw.slice();
-  bad[40] ^= 1;
-  await assert.rejects(s.putBundle(bad), (e) => e.key === 'err.bad_bundle.damaged');
-  await assert.rejects(s.putBundle(new Uint8Array(5000)), (e) => e.code === ERR.TOO_BIG);
+  bad[200] ^= 1;
+  await assert.rejects(s.putBundle(bad), (e) => e.key === 'err.bad_signature');
+  await assert.rejects(s.putBundle(new Uint8Array(16200)), (e) => e.code === ERR.TOO_BIG);
+  await assert.rejects(s.putBundle(Uint8Array.from([0x44, 0x4f, 0x42, 0x4e, 1, 2, 3, 4])), (e) => e.key === 'err.plain_refused');
+  s.close();
+});
+
+test('the device card: public, signed, the same ID everywhere', { skip }, async () => {
+  const s = await open();
+  const card = await s.getIdentity();
+  assert.match(card.id, /^[0-9A-Z]{4}(-[0-9A-Z]{4}){3}$/);
+  assert.equal(card.id, s.hello.device);
+  assert.equal(card.id, s.state['device.id']);
+  assert.deepEqual(Object.keys(card).sort(), ['created', 'ed', 'id', 'label', 'sig', 'v', 'x']);
+  assert.ok(!JSON.stringify(card).includes('storage'));
+  s.close();
+});
+
+test('the dangerous actions ask for the button on the device and say what for', { skip }, async () => {
+  const s = await open();
+  await neutral(s);
+  await assert.rejects(s.act('erase.profile', true), (e) => e.code === ERR.PHYSICAL && e.key === 'err.physical.erase');
+  await assert.rejects(s.act('factory.reset', true), (e) => e.code === ERR.PHYSICAL);
+  await assert.rejects(s.act('erase.profile', false), (e) => e.code === ERR.NOT_ALLOWED);      // two-step: needs 'confirmed'
+  const copy = await s.getBundle('self');
+  await fetch(base + 'sim/button');
+  assert.equal((await s.act('erase.profile', true)).json.ok, true);
+  assert.equal(s.state['profile.fill'], 0);
+  assert.equal(s.state['assist.on'], false);
+  assert.equal((await bridge()).reason, 'CMD_PASSTHRU');
+  await s.putBundle(copy);                                              // a copy of one's own comes back without any button
+  assert.ok(s.state['profile.fill'] > 0);
   s.close();
 });
 

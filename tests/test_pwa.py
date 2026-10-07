@@ -76,31 +76,45 @@ def test_the_clients_own_tests():
     assert re.search(r"# pass (\d+)", r.stdout) and int(re.search(r"# pass (\d+)", r.stdout).group(1)) > 60
 
 
-@needs_node
-@needs_cc
-def test_the_client_against_the_real_gateway_and_bridge_core():
-    p = subprocess.Popen([sys.executable, "-m", "dataopen.cli", "ctl", "serve-sim", "--port", "0", "--trial-s", "3"], cwd=ROOT,
-                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env={**os.environ, "PYTHONUNBUFFERED": "1"})
-    try:
-        url = None
-        end = time.time() + 90
-        while time.time() < end and url is None:
-            line = p.stdout.readline()
-            if not line and p.poll() is not None:
-                break
-            m = re.search(r"http://127\.0\.0\.1:\d+/", line)
-            url = m.group(0) if m else None
-        assert url, "the simulator server did not start"
-        r = _node({"DATAOPEN_SIM_URL": url}, files=[str(PWA / "tests" / "e2e.test.mjs"), str(PWA / "tests" / "ble.test.mjs")])
-        assert r.returncode == 0, r.stdout[-4000:] + r.stderr[-2000:]
-        assert "# skipped 0" in r.stdout, "the end-to-end tests were skipped"
-        assert int(re.search(r"# pass (\d+)", r.stdout).group(1)) >= 20
-    finally:
+def _start_sim(*args):
+    p = subprocess.Popen([sys.executable, "-m", "dataopen.cli", "ctl", "serve-sim", "--port", "0", *args], cwd=ROOT, stdout=subprocess.PIPE,
+                         stderr=subprocess.STDOUT, text=True, env={**os.environ, "PYTHONUNBUFFERED": "1"})
+    url = None
+    end = time.time() + 90
+    while time.time() < end and url is None:
+        line = p.stdout.readline()
+        if not line and p.poll() is not None:
+            break
+        m = re.search(r"http://127\.0\.0\.1:\d+/", line)
+        url = m.group(0) if m else None
+    assert url, "the simulator server did not start"
+    return p, url
+
+
+def _stop(*procs):
+    for p in procs:
         p.terminate()
+    for p in procs:
         try:
             p.wait(10)
         except subprocess.TimeoutExpired:
             p.kill()
+
+
+@needs_node
+@needs_cc
+def test_the_client_against_two_real_gateways_and_bridge_cores():
+    """The browser client's own code against the real gateway and C bridge core, and a profile carried from device A to device B."""
+    pa, a = _start_sim("--trial-s", "3")
+    pb, b = _start_sim("--trial-s", "3", "--profile", "none")
+    try:
+        names = ["ble.test.mjs", "e2e.test.mjs", "transfer.test.mjs"]
+        r = _node({"DATAOPEN_SIM_URL": a, "DATAOPEN_SIM_URL_B": b}, files=[str(PWA / "tests" / n) for n in names])
+        assert r.returncode == 0, r.stdout[-4000:] + r.stderr[-2000:]
+        assert "# skipped 0" in r.stdout, "the end-to-end tests were skipped"
+        assert int(re.search(r"# pass (\d+)", r.stdout).group(1)) >= 24
+    finally:
+        _stop(pa, pb)
 
 
 PLAYWRIGHT_MODULES = os.environ.get("PLAYWRIGHT_NODE_MODULES") or "/opt/node22/lib/node_modules"
@@ -112,26 +126,12 @@ needs_playwright = pytest.mark.skipif(not (Path(PLAYWRIGHT_MODULES) / "playwrigh
 @needs_playwright
 def test_the_page_in_a_real_chromium(tmp_path):
     """Not run in CI (no Playwright there). Phone-sized Chromium against the simulator: layout, sizes, contrast as rendered, taps, the
-    repeat-tap guard, the two-step bypass, files, calibration, and a reload with no network at all."""
-    p = subprocess.Popen([sys.executable, "-m", "dataopen.cli", "ctl", "serve-sim", "--port", "0", "--trial-s", "20"], cwd=ROOT,
-                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env={**os.environ, "PYTHONUNBUFFERED": "1"})
+    repeat-tap guard, the two-step bypass, files, the device card, erasing with the button, calibration, a reload with no network."""
+    p, url = _start_sim("--trial-s", "20")
     try:
-        url = None
-        end = time.time() + 90
-        while time.time() < end and url is None:
-            line = p.stdout.readline()
-            m = re.search(r"http://127\.0\.0\.1:\d+/", line)
-            url = m.group(0) if m else None
-            if not line and p.poll() is not None:
-                break
-        assert url
         env = {**os.environ, "DATAOPEN_SIM_URL": url, "PLAYWRIGHT_NODE_MODULES": PLAYWRIGHT_MODULES, "DATAOPEN_SHOTS": str(tmp_path)}
         r = subprocess.run([NODE, str(PWA / "tests" / "browser.mjs")], capture_output=True, text=True, env=env, timeout=400, cwd=ROOT)
         assert r.returncode == 0, r.stdout[-4000:] + r.stderr[-2000:]
-        assert "failed 0" in r.stdout and r.stdout.count("\nok - ") + r.stdout.startswith("ok - ") >= 12
+        assert "failed 0" in r.stdout and r.stdout.count("ok - ") >= 13
     finally:
-        p.terminate()
-        try:
-            p.wait(10)
-        except subprocess.TimeoutExpired:
-            p.kill()
+        _stop(p)

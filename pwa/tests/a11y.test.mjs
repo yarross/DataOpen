@@ -85,6 +85,13 @@ test('nothing a device sends can become markup, code or a URL', () => {
   }
 });
 
+test('the page stays dumb: no cryptography, no keys, no way to read what the device sealed', () => {
+  for (const [f, src] of js) {
+    const code = src.replace(/\/\/.*$/gm, '');
+    assert.ok(!/\bcrypto\b|subtle|SubtleCrypto|importKey|exportKey|getRandomValues|decrypt\s*\(|encrypt\s*\(|ed25519|x25519|chacha|AES-|HKDF|Uint8Array\.from\(.*seed/i.test(code), `${f} touches cryptography`);
+  }
+});
+
 test('the page makes no network requests of its own and has no analytics', () => {
   for (const [f, src] of js) {
     assert.ok(!/\bfetch\s*\(|XMLHttpRequest|sendBeacon|EventSource|importScripts/.test(src), `${f} talks to the network`);

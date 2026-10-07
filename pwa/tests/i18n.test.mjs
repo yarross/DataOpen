@@ -35,7 +35,7 @@ test('hints exist only for reasons that exist', () => {
 });
 
 test('t() fills placeholders and falls back to English, then to the key', () => {
-  assert.equal(t('ru', 'trial.left', { n: 7 }), 'Если ничего не нажать, всё вернётся само через 7 с');
+  assert.equal(t('ru', 'trial.compact', { n: 7 }), 'Стало лучше? Само вернётся через 7 с');
   assert.equal(t('de', 'common.ok'), 'Done');
   assert.equal(t('ru', 'no.such.key'), 'no.such.key');
   assert.equal(t('en', 'stepper.value', { v: 3 }), 'Level 3 of {max}');

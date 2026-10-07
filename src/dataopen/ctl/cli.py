@@ -40,6 +40,55 @@ def _golden(a) -> int:
     return EXIT_OK
 
 
+def _identity(a) -> int:
+    """A gateway directory's device ID and card (written with --out). Read-only: a directory without keys is reported, not provisioned."""
+    from .identity import Card, FileKeyStore, Identity
+    store = FileKeyStore(Path(a.dir) / "keys" / "keys.json")
+    d = store.load()
+    if d is None:
+        print(f"no device identity in {a.dir} (it is created the first time the gateway starts)")
+        return EXIT_FAILED
+    ident = Identity(store, d)
+    card = ident.card()
+    print(f"device ID  {ident.id}\ncreated    {ident.created}\nexports    {ident.export_seq}")
+    if a.out:
+        Path(a.out).write_text(json.dumps(card.to_json()), encoding="utf-8")
+        print(f"card written: {a.out}")
+    assert Card.from_json(card.to_json()).id == ident.id
+    return EXIT_OK
+
+
+def _transfer(a) -> int:
+    """A profile moves from one simulated device to another through a sealed file, with the button presses the real flow needs."""
+    import tempfile
+
+    from . import protocol as P
+    from .sim import World, seed_profile
+    root = Path(a.dir or tempfile.mkdtemp(prefix="dataopen-xfer-"))
+    seed_profile(root / "a", a.profile)
+    wa, wb = World(root / "a"), World(root / "b")
+    wa.phone.connect()
+    wb.phone.connect()
+    fill = lambda w: w.gw.state_tree()["profile.fill"]    # noqa: E731
+    print(f"A {wa.gw.identity.id} (profile {fill(wa)} %)    B {wb.gw.identity.id} (profile {fill(wb)} %)")
+    card = wb.phone.get_identity()
+    r = wa.phone.try_bundle(card)
+    print(f"A exports for B without the button: {r.json()['key']} ({r.json()['detail']})")
+    wa.gw.physical_press()
+    raw = wa.phone.get_bundle(card)
+    print(f"A exports for B with the button:    {len(raw)} bytes, starts {raw[:4]!r}, the profile's magic in it: {b'BIOP' in raw}")
+    r = wb.phone.put_bundle(raw)
+    print(f"B imports from an unknown sender:   {r.json()['key']} ({r.json()['detail']})")
+    wb.gw.physical_press()
+    r = wb.phone.put_bundle(raw)
+    print(f"B imports with its button:          {'accepted' if r.type == P.T_ACK else r.json()}; profile {fill(wb)} %")
+    r = wb.phone.put_bundle(raw)
+    print(f"the same file again:                {r.json()['key']}")
+    wa.gw.physical_press()
+    print(f"the file on A itself:               {wa.phone.put_bundle(raw).json()['key']}")
+    return EXIT_OK
+
+
 def _pwa_build(a) -> int:
     from .pwa import build, is_current, pwa_root
     root = Path(a.root) if a.root else pwa_root()
@@ -112,6 +161,14 @@ def register(sub) -> None:
     g = ss.add_parser("golden", help="write the cross-language test vectors")
     g.add_argument("--out", default="pwa/tests/golden.json")
     g.set_defaults(fn=_golden)
+    i = ss.add_parser("identity", help="show a gateway directory's device ID and card (read-only)")
+    i.add_argument("--dir", required=True)
+    i.add_argument("--out", help="write the card (.docard) here")
+    i.set_defaults(fn=_identity)
+    x = ss.add_parser("transfer", help="a profile moves between two simulated devices through a sealed file, with the button presses")
+    x.add_argument("--dir")
+    x.add_argument("--profile", default="tremor")
+    x.set_defaults(fn=_transfer)
     b = ss.add_parser("pwa-build", help="write the service worker's file list and the cache version into pwa/")
     b.add_argument("--root")
     b.add_argument("--check", action="store_true", help="only check that the committed files are current")

@@ -3,7 +3,7 @@
 //   DATAOPEN_SIM_URL=http://127.0.0.1:PORT/ node pwa/tests/browser.mjs
 import { createRequire } from 'node:module';
 import assert from 'node:assert/strict';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 
 const require = createRequire(process.env.PLAYWRIGHT_NODE_MODULES ? `${process.env.PLAYWRIGHT_NODE_MODULES}/` : '/opt/node22/lib/node_modules/');
 const { chromium } = require('playwright');
@@ -161,17 +161,10 @@ check('hardware bypass is two steps, can be cancelled, and is one-way', async ()
   await shot('08-bypass');
 });
 
-check('a settings file is saved to the phone and loaded back', async () => {
+check('after the hand re-arms the bridge the profile page is there', async () => {
   await fetch(base + 'sim/panic/2300');
   await until(async () => (await bridge()).state !== 'HW_BYPASS', 15000, 'engaged again');
   await tapBtn('Профиль');
-  const dl = page.waitForEvent('download');
-  await tapBtn('Сохранить файл настроек');
-  const d = await dl;
-  assert.match(d.suggestedFilename(), /\.dobundle$/);
-  const path = await d.path();
-  await page.locator('input[type=file]').setInputFiles(path);
-  await page.waitForFunction(() => /Настройки загружены/.test(document.querySelector('.message')?.textContent || ''), null, { timeout: 8000 });
   await shot('09-profile');
 });
 
@@ -185,6 +178,50 @@ check('the meter and the calibration switch work', async () => {
   await sleep(500);
   await calib.tap();
   await until(async () => !(await bridge()).calibrating, 3000, 'stopped calibrating');
+});
+
+check('the device card and a copy for this device are saved to the phone, and the copy loads back', async () => {
+  await tapBtn('Ещё');
+  const idText = await page.locator('.control', { hasText: 'Номер устройства' }).innerText();
+  const id = idText.match(/[0-9A-Z]{4}(-[0-9A-Z]{4}){3}/)[0];
+  const dlCard = page.waitForEvent('download');
+  await tapBtn('Сохранить карточку устройства');
+  const card = await dlCard;
+  assert.equal(card.suggestedFilename(), `dataopen-${id}.docard`);
+  const cardJson = JSON.parse(readFileSync(await card.path(), 'utf8'));
+  assert.equal(cardJson.id, id);
+  assert.ok(!('storage' in cardJson));
+  await shot('12-device-id');
+  await tapBtn('Профиль');
+  const dlCopy = page.waitForEvent('download');
+  await tapBtn('Сохранить копию для этого устройства');
+  const copy = await dlCopy;
+  assert.match(copy.suggestedFilename(), /\.dobundle$/);
+  const bytes = readFileSync(await copy.path());
+  assert.equal(bytes.subarray(0, 4).toString(), 'DOBS');
+  assert.ok(!bytes.includes('BIOP'));
+  await page.locator('.control', { hasText: 'Загрузить файл настроек' }).locator('input[type=file]').setInputFiles(await copy.path());
+  await page.waitForFunction(() => /Настройки загружены/.test(document.querySelector('.message')?.textContent || ''), null, { timeout: 8000 });
+});
+
+check('erasing personal data needs the button on the device: the message says so, and "Try again" finishes it', async () => {
+  await tapBtn('Выключить помощь').catch(() => {});
+  await tapBtn('Ещё');
+  await tapBtn('Стереть личные данные');
+  await shot('13-erase-confirm');
+  await tapBtn('Подтвердить');
+  await page.waitForFunction(() => /кнопк\S* на устройстве/.test(document.querySelector('.message')?.textContent || ''), null, { timeout: 5000 });
+  assert.equal(await page.getByRole('button', { name: 'Повторить', exact: true }).isVisible(), true);
+  await shot('14-needs-button');
+  await fetch(base + 'sim/button');
+  await sleep(500);
+  await tapBtn('Повторить');
+  await page.waitForFunction(() => /Личные данные стёрты/.test(document.querySelector('.message')?.textContent || ''), null, { timeout: 5000 });
+  const b = await bridge();
+  assert.equal(b.assist_wanted, false);
+  assert.equal(b.reason, 'CMD_PASSTHRU');
+  await tapBtn('Профиль');
+  assert.match(await text('[role=progressbar] + .meter-text'), /^0 %/);
 });
 
 check('offline: after one visit the page opens with no network at all, and nothing but its own origin was ever contacted', async () => {

@@ -35,5 +35,5 @@ export function describe(status, conn, lang) {
 
 export function trialModel(status, lang) {
   if (!status || !(status.flags & SF.TRIAL)) return null;
-  return { left: status.trialLeftS, text: t(lang, 'trial.left', { n: status.trialLeftS }) };
+  return { left: status.trialLeftS, text: t(lang, 'trial.compact', { n: status.trialLeftS }) };
 }

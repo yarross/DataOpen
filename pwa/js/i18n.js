@@ -35,8 +35,7 @@ export const STRINGS = {
     'tone.neutral': 'Выключено',
     'tone.warn': 'Внимание',
     'tone.error': 'Ошибка',
-    'trial.title': 'Стало лучше?',
-    'trial.left': 'Если ничего не нажать, всё вернётся само через {n} с',
+    'trial.compact': 'Стало лучше? Само вернётся через {n} с',
     'trial.keep': 'Оставить',
     'trial.undo': 'Вернуть как было',
     'bypass.title': 'Железный bypass',
@@ -97,6 +96,21 @@ export const STRINGS = {
     'err.unsupported': 'Это устройство так не умеет.',
     'err.physical': 'Нажмите кнопку на самом устройстве и повторите.',
     'err.bad_version': 'Версия приложения и устройства не совпадает.',
+    'err.bad_bundle.card': 'Карточка устройства не подходит.',
+    'err.wrong_device': 'Этот файл сделан для другого устройства и здесь не откроется.',
+    'err.bad_signature': 'Файл изменён или повреждён, поэтому его не приняли.',
+    'err.replay': 'Этот файл уже был принят или он старее принятого. Сделайте новый.',
+    'err.plain_refused': 'Это старый открытый формат файла. Устройство его не принимает: сделайте новую копию.',
+    'err.physical.trust': 'Файл от нового отправителя {id}. Нажмите кнопку на устройстве, чтобы ему доверять, и повторите.',
+    'err.physical.export': 'Файл для другого устройства {id}. Сверьте номер с наклейкой, нажмите кнопку на этом устройстве и повторите.',
+    'err.physical.erase': 'Стирание нужно подтвердить кнопкой на устройстве. Нажмите её и повторите.',
+    'retry.again': 'Повторить',
+    'file.copy_saved': 'Копия сохранена. Она откроется только на этом устройстве.',
+    'file.for_saved': 'Файл для устройства {id} сохранён. Он откроется только там.',
+    'file.card_saved': 'Карточка устройства сохранена.',
+    'file.choose_card': 'Выбрать карточку',
+    'file.bad_card': 'Это не карточка устройства.',
+    'erase.done': 'Личные данные стёрты. Помощь выключена.',
     'err.timeout': 'Устройство не ответило.',
     'err.disconnected': 'Связь потеряна.',
     'err.interrupted': 'Передача прервана: сработала кнопка выключения.',
@@ -165,8 +179,7 @@ export const STRINGS = {
     'tone.neutral': 'Off',
     'tone.warn': 'Attention',
     'tone.error': 'Error',
-    'trial.title': 'Is it better?',
-    'trial.left': 'If you press nothing, it all goes back by itself in {n} s',
+    'trial.compact': 'Is it better? It goes back by itself in {n} s',
     'trial.keep': 'Keep it',
     'trial.undo': 'Undo',
     'bypass.title': 'Hardware bypass',
@@ -227,6 +240,21 @@ export const STRINGS = {
     'err.unsupported': 'This device cannot do that.',
     'err.physical': 'Press the button on the device itself and try again.',
     'err.bad_version': 'The app and the device versions do not match.',
+    'err.bad_bundle.card': 'The device card does not fit.',
+    'err.wrong_device': 'This file was made for another device and will not open here.',
+    'err.bad_signature': 'The file was changed or damaged, so it was not accepted.',
+    'err.replay': 'This file was already accepted, or it is older than one that was. Make a new one.',
+    'err.plain_refused': 'This is the old open file format. The device does not accept it: make a new copy.',
+    'err.physical.trust': 'A file from a new sender {id}. Press the button on the device to trust it, then repeat.',
+    'err.physical.export': 'A file for another device {id}. Check its number against its label, press the button on this device, then repeat.',
+    'err.physical.erase': 'Erasing must be confirmed with the button on the device. Press it and repeat.',
+    'retry.again': 'Try again',
+    'file.copy_saved': 'The copy is saved. It will open only on this device.',
+    'file.for_saved': 'The file for device {id} is saved. It will open only there.',
+    'file.card_saved': 'The device card is saved.',
+    'file.choose_card': 'Choose a card',
+    'file.bad_card': 'This is not a device card.',
+    'erase.done': 'Personal data erased. Assistance is off.',
     'err.timeout': 'The device did not answer.',
     'err.disconnected': 'The connection was lost.',
     'err.interrupted': 'The transfer was interrupted: the turn-off button took priority.',
@@ -288,7 +316,14 @@ export function pick(text, lang) {
 export const errKeyFor = (code, detail) => {
   const name = Object.keys(ERR).find((k) => ERR[k] === code);
   if (name === 'BAD_BUNDLE' && STRINGS.en[`err.bad_bundle.${detail}`]) return `err.bad_bundle.${detail}`;
+  if (name === 'PHYSICAL') {                                  // the device says WHAT it wants the button for: 'trust:ID', 'export:ID', 'erase'
+    const what = String(detail || '').split(':')[0];
+    if (STRINGS.en[`err.physical.${what}`]) return `err.physical.${what}`;
+  }
   return name ? `err.${name.toLowerCase()}` : 'err.unknown';
 };
+
+// the parts of a device's detail text that a message needs (an ID after the colon)
+export const errParams = (detail) => ({ id: String(detail || '').split(':')[1] || '' });
 
 export const allReasonKeys = () => REASONS.map((r) => `reason.${r}`);

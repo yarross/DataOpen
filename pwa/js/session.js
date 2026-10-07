@@ -8,7 +8,7 @@
 //   onChunk(u8), onStatus(u8), onClose()                                              set by the session
 import { T, VER, ERR, CHUNK_MIN, CHUNK_MAX } from './constants.js';
 import { packMessage, packJson, unpackMessage, bodyJson, chunkMessage, Reassembler, unpackStatus, unpackInfo, crc32 } from './link.js';
-import { errKeyFor } from './i18n.js';
+import { errKeyFor, errParams } from './i18n.js';
 
 export class SessionError extends Error {
   constructor(code, key, detail = '') {
@@ -16,6 +16,7 @@ export class SessionError extends Error {
     this.code = code;
     this.key = key;
     this.detail = detail;
+    this.params = errParams(detail);
   }
 }
 
@@ -130,6 +131,10 @@ export class Session {
     if (m.type === T.EVENT) {
       let j;
       try { j = bodyJson(m); } catch { this.bad++; return; }
+      if (typeof j.manifest === 'string' && this.manifest && this.hello && j.manifest !== this.hello.manifest_hash) {
+        this.hello.manifest_hash = j.manifest;                          // the device has a new layout: fetch it (and cache it under its new hash)
+        this.refreshManifest().catch(() => {});
+      }
       if (j.state && typeof j.state === 'object') {
         Object.assign(this.state, j.state);
         if (Number.isInteger(j.rev)) this.rev = j.rev;
@@ -253,7 +258,9 @@ export class Session {
   stop() { return this.request(T.STOP, {}, { urgent: true, body: new Uint8Array(0) }); }
   hardBypass() { return this.request(T.HARD_BYPASS, {}, { urgent: true, body: new Uint8Array(0) }); }
   putBundle(bytes) { return this.request(T.BUNDLE_PUT, {}, { body: bytes, timeoutMs: 20000 }); }
-  async getBundle() { return (await this.request(T.GET, { what: 'bundle' }, { timeoutMs: 20000 })).body; }
+  // 'self' (a copy only this device can open) or another device's card (a parsed .docard); the file comes back sealed, the page never reads it
+  async getBundle(target = 'self') { return (await this.request(T.GET, { what: 'bundle', for: target }, { timeoutMs: 20000 })).body; }
+  async getIdentity() { return (await this.request(T.GET, { what: 'identity' })).json; }
   ping() { return this.request(T.PING, {}); }
 }
 

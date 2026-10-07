@@ -8,6 +8,7 @@ import { UI, download } from './dom.js';
 import { buildView } from './view.js';
 import { describe, trialModel } from './shell.js';
 import { detectLang, t, LANGS } from './i18n.js';
+import { ERR } from './constants.js';
 import { VERSION } from './build.js';
 
 const THEMES = ['auto', 'light', 'dark', 'contrast'];
@@ -28,9 +29,22 @@ export async function start(root = document.getElementById('app'), env = {}) {
   const session = transport ? new Session(transport, { store, lang: prefs.lang }) : null;
   const app = { page: 'main', message: null, updateAvailable: false, busy: false, failed: '', retry: 0, retryTimer: null, swReg: null, trialUntil: 0 };
 
-  const say = (kind, text) => { app.message = { kind, text }; render(); };
-  const errText = (e) => (e instanceof SessionError ? t(prefs.lang, e.key.startsWith('err.') ? e.key : 'err.unknown') : t(prefs.lang, 'err.unknown'));
-  const guarded = async (fn) => { try { return await fn(); } catch (e) { say('error', errText(e)); return null; } };
+  // errors stay until dismissed or retried; a confirmation fades after a few seconds so it never sits on top of what the person is tapping
+  const say = (kind, text, retry = null) => {
+    clearTimeout(app.msgTimer);
+    const msg = { kind, text, retry };
+    app.message = msg;
+    if (kind === 'info') app.msgTimer = setTimeout(() => { if (app.message === msg) { app.message = null; render(); } }, 8000);
+    render();
+  };
+  const errText = (e) => (e instanceof SessionError ? t(prefs.lang, e.key.startsWith('err.') ? e.key : 'err.unknown', e.params) : t(prefs.lang, 'err.unknown'));
+  // what the device asked for the button on itself for can simply be repeated after the press: the message carries a 'Try again'
+  const guarded = async (fn) => {
+    try { return await fn(); } catch (e) {
+      say('error', errText(e), e instanceof SessionError && e.code === ERR.PHYSICAL ? () => guarded(fn) : null);
+      return null;
+    }
+  };
 
   const ui = new UI(root, {
     tapMs: () => prefs.tapMs,
@@ -38,6 +52,7 @@ export async function start(root = document.getElementById('app'), env = {}) {
     act: (key, confirmed, node) => guarded(async () => {
       if (key === '__bypass') { await session.hardBypass(); say('info', t(prefs.lang, 'bypass.done')); return; }
       await session.act(key, confirmed);
+      if (key === 'erase.profile' || key === 'factory.reset') say('info', t(prefs.lang, 'erase.done'));
     }),
     choice: (key, value) => {
       if (key === 'lang') { prefs.lang = value; session && (session.lang = value); store.set('lang', value); }
@@ -46,14 +61,26 @@ export async function start(root = document.getElementById('app'), env = {}) {
       render();
     },
     file: (node, file) => guarded(async () => {
-      if (node.op === 'bundle_get') {
-        const bytes = await session.getBundle();
-        download(bytes, `dataopen-${new Date().toISOString().slice(0, 10)}.dobundle`);
-        say('info', t(prefs.lang, 'file.saved'));
+      const day = new Date().toISOString().slice(0, 10);
+      if (node.op === 'bundle_get') {                                    // a copy sealed to THIS device; the page only carries the bytes
+        download(await session.getBundle('self'), `dataopen-copy-${day}.dobundle`);
+        say('info', t(prefs.lang, 'file.copy_saved'));
+      } else if (node.op === 'card_get') {
+        const card = await session.getIdentity();
+        download(new TextEncoder().encode(JSON.stringify(card)), `dataopen-${card.id}.docard`, 'application/json');
+        say('info', t(prefs.lang, 'file.card_saved'));
+      } else if (node.op === 'bundle_for_card') {
+        if (!file) return;
+        if (file.size > (node.maxBytes || 4096)) { say('error', t(prefs.lang, 'file.too_big')); return; }
+        let card;
+        try { card = JSON.parse(await file.text()); } catch { card = null; }
+        if (!card || typeof card !== 'object' || typeof card.id !== 'string') { say('error', t(prefs.lang, 'file.bad_card')); return; }
+        download(await session.getBundle(card), `dataopen-for-${card.id}-${day}.dobundle`);
+        say('info', t(prefs.lang, 'file.for_saved', { id: card.id }));
       } else if (file) {
         if (node.maxBytes && file.size > node.maxBytes) { say('error', t(prefs.lang, 'file.too_big')); return; }
         say('info', t(prefs.lang, 'file.working'));
-        await session.putBundle(new Uint8Array(await file.arrayBuffer()));
+        await session.putBundle(new Uint8Array(await file.arrayBuffer()));    // opaque bytes: the device decrypts, checks and applies (or refuses)
         say('info', t(prefs.lang, 'file.loaded'));
       }
     }),
@@ -62,6 +89,7 @@ export async function start(root = document.getElementById('app'), env = {}) {
     connect: () => connect(true),
     page: (id) => { app.page = id; render(); },
     dismiss: () => { app.message = null; render(); },
+    retry: () => { const r = app.message?.retry; app.message = null; render(); if (r) r(); },
     applyUpdate: () => { app.swReg?.waiting?.postMessage('skipWaiting'); },
     dismissUpdate: () => { app.updateAvailable = false; render(); },
   });

@@ -122,7 +122,12 @@ function buildAction(n, ctx) {
   const row = h('div', { class: 'confirm-row' }, yes, no);
   row.hidden = true;
   const el = h('div', { class: 'control' }, lab, help, main, row);
-  const showConfirm = (on) => { main.hidden = on; row.hidden = !on; (on ? no : main).focus(); };
+  const showConfirm = (on) => {
+    main.hidden = on;
+    row.hidden = !on;
+    lab.hidden = !on && main.textContent === model.label;          // while asking, the heading says WHAT is being confirmed
+    (on ? no : main).focus();
+  };
   let model = n;
   main.addEventListener('click', ctx.guard(n.id, () => { if (model.confirm === 'two-step') showConfirm(true); else ctx.onAct(model.key, false, model); }));
   yes.addEventListener('click', ctx.guard(`${n.id}!`, () => { showConfirm(false); ctx.onAct(model.key, true, model); }));
@@ -145,9 +150,10 @@ function buildAction(n, ctx) {
 function buildFile(n, ctx) {
   const lab = h('span', { class: 'label' });
   const help = h('p', { class: 'help' });
-  const input = n.op === 'bundle_put' ? h('input', { type: 'file', hidden: true, accept: n.accept }) : null;
+  const takes = n.op === 'bundle_put' || n.op === 'bundle_for_card';      // these two receive a file; the others only hand one to the phone
+  const input = takes ? h('input', { type: 'file', hidden: true, accept: n.accept }) : null;
   const btn = h('button', { class: 'btn wide', type: 'button' });
-  const drop = n.op === 'bundle_put' ? h('div', { class: 'drop' }) : null;
+  const drop = takes ? h('div', { class: 'drop' }) : null;
   const el = h('div', { class: 'control' }, lab, help, btn, input, drop);
   let model = n;
   const take = (file) => { if (file) ctx.onFile(model, file); if (input) input.value = ''; };
@@ -163,7 +169,7 @@ function buildFile(n, ctx) {
     lab.textContent = m.label;
     help.textContent = m.help;
     help.hidden = !m.help;
-    btn.textContent = m.op === 'bundle_put' ? t(ctx.lang, 'file.choose') : m.label;
+    btn.textContent = m.op === 'bundle_put' ? t(ctx.lang, 'file.choose') : m.op === 'bundle_for_card' ? t(ctx.lang, 'file.choose_card') : m.label;
     lab.hidden = btn.textContent === m.label;
     btn.disabled = !ctx.online;
     if (drop) drop.textContent = t(ctx.lang, 'file.drop');
@@ -222,14 +228,14 @@ export class UI {
     this.stateTitle = h('p', { class: 'title' });
     this.stateHint = h('p', { class: 'hint' });
     this.state = h('section', { class: 'state', role: 'status', 'aria-live': 'polite' }, this.stateIcon, h('div', {}, this.stateTitle, this.stateHint));
-    this.trialTitle = h('h2');
-    this.trialText = h('p', { class: 'muted' });
+    this.trialText = h('p', { class: 'trial-text' });
     this.keep = h('button', { class: 'btn good', type: 'button', onclick: () => this.hd.confirm(true) });
     this.undo = h('button', { class: 'btn', type: 'button', onclick: () => this.hd.confirm(false) });
-    this.trial = h('section', { class: 'banner trial', role: 'alert' }, this.trialTitle, this.trialText, h('div', { class: 'row' }, this.keep, this.undo));
+    this.trial = h('section', { class: 'banner trial', role: 'alert' }, this.trialText, h('div', { class: 'row' }, this.keep, this.undo));
     this.msgText = h('p');
     this.msgClose = h('button', { class: 'btn', type: 'button', onclick: () => this.hd.dismiss() });
-    this.msg = h('div', { class: 'message', role: 'status' }, this.msgText, this.msgClose);
+    this.msgRetry = h('button', { class: 'btn primary', type: 'button', onclick: () => this.hd.retry() });
+    this.msg = h('div', { class: 'message', role: 'status' }, this.msgText, h('div', { class: 'row' }, this.msgRetry, this.msgClose));
     this.updText = h('p');
     this.updGo = h('button', { class: 'btn primary', type: 'button', onclick: () => this.hd.applyUpdate() });
     this.updLater = h('button', { class: 'btn', type: 'button', onclick: () => this.hd.dismissUpdate() });
@@ -244,7 +250,9 @@ export class UI {
     this.stop = h('button', { class: 'btn danger', type: 'button', onclick: () => this.hd.stop() });
     this.stopNote = h('p', { class: 'note' });
     this.safety = h('footer', { class: 'safety' }, h('div', { class: 'inner' }, this.stop, this.stopNote));
-    root.replaceChildren(this.state, this.trial, this.upd, this.msg, this.nav, this.connect, this.pageBox, this.safety);
+    // what must never scroll out of sight (the state, a running trial, a question or an error) lives in one sticky block at the top
+    this.top = h('div', { class: 'top' }, this.state, this.trial, this.msg, this.upd);
+    root.replaceChildren(this.top, this.nav, this.connect, this.pageBox, this.safety);
     this.navSig = '';
   }
 
@@ -260,7 +268,6 @@ export class UI {
     this.stateHint.hidden = !m.shell.hint || !!m.shell.quiet;
     this.trial.hidden = !m.trial;
     if (m.trial) {
-      this.trialTitle.textContent = t(lang, 'trial.title');
       this.trialText.textContent = m.trial.text;
       this.keep.textContent = t(lang, 'trial.keep');
       this.undo.textContent = t(lang, 'trial.undo');
@@ -270,7 +277,13 @@ export class UI {
     this.updGo.textContent = t(lang, 'update.apply');
     this.updLater.textContent = t(lang, 'update.later');
     this.msg.hidden = !m.message;
-    if (m.message) { this.msg.dataset.kind = m.message.kind; this.msgText.textContent = m.message.text; this.msgClose.textContent = t(lang, 'common.close'); }
+    if (m.message) {
+      this.msg.dataset.kind = m.message.kind;
+      this.msgText.textContent = m.message.text;
+      this.msgClose.textContent = t(lang, 'common.close');
+      this.msgRetry.textContent = t(lang, 'retry.again');
+      this.msgRetry.hidden = !m.message.retry;                          // asked for the button on the device: one tap repeats the request
+    }
     // connect screen or the pages
     const showConnect = m.connect.show;
     this.connect.hidden = !showConnect;

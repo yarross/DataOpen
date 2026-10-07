@@ -382,6 +382,8 @@ def build_parser() -> argparse.ArgumentParser:
     register_video(sub)
     from .ui.cli import register as register_ui
     register_ui(sub)
+    from .ctl.cli import register as register_ctl
+    register_ctl(sub)
     return p
 
 

@@ -188,10 +188,10 @@
       ]
     },
     {
-      "id": "device",
+      "id": "more",
       "title": {
-        "ru": "Устройство",
-        "en": "Device"
+        "ru": "Ещё",
+        "en": "More"
       },
       "controls": [
         {

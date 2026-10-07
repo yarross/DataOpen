@@ -9,7 +9,7 @@ export const MODE = { HW_BYPASS: 0, PROBE: 1, PASSTHRU: 2, ASSIST: 3 };
 export function describe(status, conn, lang) {
   if (conn !== 'connected') {
     const key = conn === 'connecting' ? 'conn.connecting' : conn === 'lost' ? 'conn.lost' : 'conn.none';
-    return { tone: conn === 'lost' ? 'warn' : 'neutral', icon: '○', title: t(lang, key), hint: t(lang, 'conn.independent'), assisting: false, known: false };
+    return { tone: conn === 'lost' ? 'warn' : 'neutral', icon: '○', title: t(lang, key), hint: t(lang, 'conn.independent'), quiet: true, assisting: false, known: false };
   }
   if (!status || status.bridge === 0 || status.mode === MODE_UNKNOWN) {
     return { tone: 'warn', icon: '?', title: t(lang, 'shell.nodata'), hint: t(lang, 'reason.STALE_LINK'), assisting: false, known: false };

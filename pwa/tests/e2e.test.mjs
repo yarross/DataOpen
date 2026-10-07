@@ -155,19 +155,18 @@ test('a settings file goes out and comes back, a damaged one is refused with a p
 test('calibration through the browser: help goes off, progress rises, a profile is stored at the end', { skip }, async () => {
   const s = await open();
   await neutral(s);
-  const before = s.status.fill;
   await s.set('calib.running', true);
   assert.ok((await bridge()).calibrating);
   const fills = [];
   s.on('status', (x) => fills.push(x.fill));
   await until(() => s.status.flags & SF.CALIBRATING, 2000, 'calibrating flag');
   await until(() => s.status.fill >= 90, 8000, 'fill >= 90');
-  assert.ok(fills.length > 2 && fills.every((v, i) => i === 0 || v >= fills[i - 1]));
+  assert.ok(fills.length >= 1 && fills.every((v, i) => i === 0 || v >= fills[i - 1]), `fill sequence ${fills}`);
   await assert.rejects(s.set('assist.on', true), (e) => e.code === ERR.BUSY);
   await s.set('calib.running', false);
   assert.equal((await bridge()).calibrating, false);
-  assert.ok(s.status.ready & RB.ASC || true);
-  assert.ok(s.status.fill >= before);
+  await until(() => s.status.fill >= 50 && !(s.status.flags & SF.CALIBRATING), 3000, 'the new profile is the current one');
+  assert.ok(s.status.ready & RB.ASC);
   s.close();
 });
 

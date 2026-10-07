@@ -36,7 +36,8 @@ function buildToggle(n, ctx) {
   const mark = h('span', { class: 'mark' });
   const btn = h('button', { class: 'btn switch', type: 'button', role: 'switch', 'aria-labelledby': `${id}-l ${id}-m` });
   mark.id = `${id}-m`;
-  btn.append(h('span', { text: '' }), mark);
+  const glyph = h('span', { 'aria-hidden': 'true' });
+  btn.append(glyph, mark);
   btn.addEventListener('click', ctx.guard(n.id, () => ctx.onSet(n.key, !btn._on)));
   const help = n.help ? h('p', { class: 'help', text: n.help }) : null;
   const el = h('div', { class: 'control' }, lab, help, btn);
@@ -45,6 +46,7 @@ function buildToggle(n, ctx) {
     btn.setAttribute('aria-checked', String(m.on));
     btn.disabled = !m.known || !ctx.online;
     mark.textContent = m.known ? t(ctx.lang, m.on ? 'common.on' : 'common.off') : '—';
+    glyph.textContent = m.on ? '●' : '○';
     lab.textContent = m.label;
   } };
 }
@@ -131,6 +133,7 @@ function buildAction(n, ctx) {
     help.textContent = m.help;
     help.hidden = !m.help;
     main.textContent = m.actionLabel || m.label;
+    lab.hidden = main.textContent === m.label;                            // a button that says the same as its heading needs no heading
     main.className = `btn wide${m.danger ? ' danger' : ''}`;
     yes.textContent = m.confirmLabel || t(ctx.lang, 'common.confirm');
     yes.className = `btn wide${m.danger ? ' danger' : ' primary'}`;
@@ -142,14 +145,14 @@ function buildAction(n, ctx) {
 function buildFile(n, ctx) {
   const lab = h('span', { class: 'label' });
   const help = h('p', { class: 'help' });
-  const input = h('input', { type: 'file', hidden: true, accept: n.accept });
+  const input = n.op === 'bundle_put' ? h('input', { type: 'file', hidden: true, accept: n.accept }) : null;
   const btn = h('button', { class: 'btn wide', type: 'button' });
   const drop = n.op === 'bundle_put' ? h('div', { class: 'drop' }) : null;
   const el = h('div', { class: 'control' }, lab, help, btn, input, drop);
   let model = n;
-  const take = (file) => { if (file) ctx.onFile(model, file); input.value = ''; };
-  btn.addEventListener('click', ctx.guard(n.id, () => (model.op === 'bundle_put' ? input.click() : ctx.onFile(model, null))));
-  input.addEventListener('change', () => take(input.files[0]));
+  const take = (file) => { if (file) ctx.onFile(model, file); if (input) input.value = ''; };
+  btn.addEventListener('click', ctx.guard(n.id, () => (input ? input.click() : ctx.onFile(model, null))));
+  input?.addEventListener('change', () => take(input.files[0]));
   if (drop) {
     for (const ev of ['dragenter', 'dragover']) drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add('over'); });
     for (const ev of ['dragleave', 'drop']) drop.addEventListener(ev, () => drop.classList.remove('over'));
@@ -161,6 +164,7 @@ function buildFile(n, ctx) {
     help.textContent = m.help;
     help.hidden = !m.help;
     btn.textContent = m.op === 'bundle_put' ? t(ctx.lang, 'file.choose') : m.label;
+    lab.hidden = btn.textContent === m.label;
     btn.disabled = !ctx.online;
     if (drop) drop.textContent = t(ctx.lang, 'file.drop');
   } };
@@ -231,11 +235,10 @@ export class UI {
     this.updLater = h('button', { class: 'btn', type: 'button', onclick: () => this.hd.dismissUpdate() });
     this.upd = h('section', { class: 'banner' }, this.updText, h('div', { class: 'row' }, this.updGo, this.updLater));
     this.nav = h('nav', { class: 'pages' });
-    this.connTitle = h('h1');
     this.connSteps = h('ol');
-    this.connNote = h('p', { class: 'muted' });
+    this.connNotes = h('div');
     this.connBtn = h('button', { class: 'btn primary', type: 'button', onclick: () => this.hd.connect() });
-    this.connect = h('section', { class: 'connect' }, this.connTitle, this.connSteps, this.connBtn, this.connNote);
+    this.connect = h('section', { class: 'connect' }, this.connBtn, this.connSteps, this.connNotes);
     this.pageBox = h('main');
     this.page = new Mount(this.pageBox, this.ctx);
     this.stop = h('button', { class: 'btn danger', type: 'button', onclick: () => this.hd.stop() });
@@ -254,7 +257,7 @@ export class UI {
     this.stateIcon.textContent = m.shell.icon;
     this.stateTitle.textContent = m.shell.title;
     this.stateHint.textContent = m.shell.hint;
-    this.stateHint.hidden = !m.shell.hint;
+    this.stateHint.hidden = !m.shell.hint || !!m.shell.quiet;
     this.trial.hidden = !m.trial;
     if (m.trial) {
       this.trialTitle.textContent = t(lang, 'trial.title');
@@ -274,12 +277,12 @@ export class UI {
     this.nav.hidden = showConnect || !m.pages.length;
     this.pageBox.hidden = showConnect;
     if (showConnect) {
-      this.connTitle.textContent = m.connect.title;
       this.connSteps.replaceChildren(...m.connect.steps.map((s) => h('li', { text: s })));
+      this.connSteps.hidden = !m.connect.canConnect;
       this.connBtn.textContent = m.connect.button;
       this.connBtn.hidden = !m.connect.canConnect;
       this.connBtn.disabled = m.connect.busy;
-      this.connNote.textContent = m.connect.note;
+      this.connNotes.replaceChildren(...m.connect.notes.filter(Boolean).map((s) => h('p', { class: 'muted', text: s })));
     } else {
       const sig = m.pages.map((p) => `${p.id}:${p.title}`).join('|') + m.currentPage;
       if (sig !== this.navSig) {

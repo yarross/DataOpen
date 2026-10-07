@@ -20,7 +20,10 @@ jobs:
           pip install -e '.[dev,capture]' tree-sitter tree-sitter-c-sharp
       - name: Lint
         run: ruff check src tests
-      - name: Tests (core, protocol, Lua on 5.1/5.4/LuaJIT, GMod host stub, C# syntax)
+      - uses: actions/setup-node@v4          # the phone client's tests (pwa/tests) run on Node, started from tests/test_pwa.py
+        with:
+          node-version: '22'
+      - name: Tests (core, protocol, Lua on 5.1/5.4/LuaJIT, GMod host stub, C# syntax, the phone client on Node)
         run: python -m pytest -q
 
   detector:

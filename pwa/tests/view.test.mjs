@@ -9,7 +9,7 @@ const state = { 'assist.on': true, 'assist.strength': 7, 'tremor.level': 5, 'cal
 
 test('the default manifest becomes three pages with the controls the plan lists', () => {
   const v = buildView(manifest, state, 'ru');
-  assert.deepEqual(v.pages.map((p) => p.id), ['main', 'profile', 'device']);
+  assert.deepEqual(v.pages.map((p) => p.id), ['main', 'profile', 'more']);
   const byKey = {};
   for (const n of walk(v.pages.flatMap((p) => p.nodes))) if (n.key) byKey[n.key] = n;
   assert.equal(byKey['assist.on'].kind, 'toggle');

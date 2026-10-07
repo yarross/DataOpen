@@ -57,12 +57,12 @@ test('the base text is 20 px at the default browser size and everything is in re
   for (const m of css.matchAll(/font-size:\s*([\d.]+)rem/g)) assert.ok(rem(m[1]) >= 16, `font-size ${m[1]}rem is below 16 px`);
 });
 
-test('touch targets are at least 64 px, the stop button 80 px, steppers 64 px wide', () => {
+test('touch targets are at least 64 px, the stop button 80 px, the stepper buttons share the full width', () => {
   assert.ok(rem(css.match(/--target:\s*([\d.]+)rem/)[1]) >= 64);
   assert.match(css, /\.btn\s*\{[^}]*min-height:\s*var\(--target\)/);
   assert.match(css, /\.btn\s*\{[^}]*min-width:\s*var\(--target\)/);
   assert.ok(rem(css.match(/\.safety \.btn\s*\{[^}]*min-height:\s*([\d.]+)rem/)[1]) >= 80);
-  assert.ok(rem(css.match(/grid-template-columns:\s*([\d.]+)rem/)[1]) >= 64);
+  assert.match(css, /\.stepper\s*\{[^}]*grid-template-columns:\s*1fr 1fr/);          // two wide buttons, the value above them
   assert.ok(rem(css.match(/--gap:\s*([\d.]+)rem/)[1]) >= 16);
 });
 

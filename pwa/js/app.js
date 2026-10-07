@@ -71,11 +71,13 @@ export async function start(root = document.getElementById('app'), env = {}) {
     else document.documentElement.dataset.theme = prefs.theme;
   }
 
-  function settingsPage() {
+  // The fixed page: the hardware bypass first, then whatever the device's own 'more' page holds, then the app's own preferences.
+  function settingsPage(more) {
     const lang = prefs.lang;
     return { id: '__settings', title: t(lang, 'nav.settings'), nodes: [
       { kind: 'action', id: 'bypass', key: '__bypass', label: t(lang, 'bypass.title'), help: t(lang, 'bypass.hint'), actionLabel: t(lang, 'bypass.do'),
         confirm: 'two-step', confirmLabel: t(lang, 'bypass.confirm'), danger: true },
+      ...(more ? more.nodes : []),
       { kind: 'choice', id: 'lang', key: 'lang', label: t(lang, 'settings.lang'), help: '', value: lang, options: [{ value: 'ru', label: 'Русский' }, { value: 'en', label: 'English' }] },
       { kind: 'choice', id: 'theme', key: 'theme', label: t(lang, 'settings.theme'), help: '', value: prefs.theme, options: THEMES.map((v) => ({ value: v, label: t(lang, `settings.theme.${v}`) })) },
       { kind: 'choice', id: 'taps', key: 'taps', label: t(lang, 'settings.taps'), help: t(lang, 'settings.taps.hint'), value: prefs.tapMs,
@@ -94,14 +96,15 @@ export async function start(root = document.getElementById('app'), env = {}) {
       const v = buildView(session.manifest, session.state, lang);
       pages = v.pages;
     }
-    if (connected) pages = [...pages, settingsPage()];
+    if (connected) pages = [...pages.filter((p) => p.id !== 'more'), settingsPage(pages.find((p) => p.id === 'more'))];
     const supported = !!transport;
     const shell = supported ? describe(status, conn, lang) : { tone: 'warn', icon: '!', title: t(lang, 'conn.unsupported'), hint: t(lang, 'conn.unsupported.hint') };
     return {
       lang, shell, trial: connected ? trialModel(status, lang) : null, pages, currentPage: pages.some((p) => p.id === app.page) ? app.page : pages[0]?.id,
       online: connected, canStop: !!session?.linked, updateAvailable: app.updateAvailable, message: app.message,
       connect: { show: !connected, canConnect: supported, busy: conn === 'connecting' || app.busy,
-        title: t(lang, 'app.title'), steps: [1, 2, 3].map((i) => t(lang, `conn.step${i}`)), note: app.failed || (supported ? t(lang, 'conn.pairing') : ''),
+        steps: [1, 2, 3].map((i) => t(lang, `conn.step${i}`)),
+        notes: supported ? [app.failed, t(lang, 'conn.pairing'), t(lang, 'conn.independent'), t(lang, 'conn.panic_hint')] : [t(lang, 'conn.panic_hint')],
         button: t(lang, conn === 'lost' ? 'conn.retry' : 'conn.button') },
     };
   }
@@ -119,9 +122,11 @@ export async function start(root = document.getElementById('app'), env = {}) {
       await session.connect({ interactive });
       app.retry = 0;
     } catch (e) {
-      const cancelled = /cancel|chooser|NotFoundError/i.test(String(e?.message || e) + String(e?.name || ''));
-      app.failed = t(prefs.lang, cancelled ? 'conn.cancelled' : e?.message === 'needs-gesture' ? 'conn.pairing' : 'conn.failed');
-      if (!interactive && e?.message !== 'needs-gesture') scheduleRetry();
+      const msg = String(e?.message || e);
+      const key = e?.name === 'SecurityError' ? 'conn.blocked' : /adapter|unavailable|not available/i.test(msg) ? 'conn.no_adapter'
+        : /cancel/i.test(msg) ? 'conn.cancelled' : msg === 'needs-gesture' ? 'conn.pairing' : 'conn.failed';
+      app.failed = t(prefs.lang, key);
+      if (!interactive && msg !== 'needs-gesture') scheduleRetry();
     }
     render();
   }
@@ -151,6 +156,7 @@ if (typeof document !== 'undefined' && document.getElementById('app') && !global
       reg.addEventListener('updatefound', () => watch(reg.installing));
     }).catch(() => {});
     let reloaded = false;
-    navigator.serviceWorker.addEventListener('controllerchange', () => { if (!reloaded) { reloaded = true; location.reload(); } });
+    const hadController = !!navigator.serviceWorker.controller;           // the very first install takes control silently: no reload then
+    navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController && !reloaded) { reloaded = true; location.reload(); } });
   });
 }

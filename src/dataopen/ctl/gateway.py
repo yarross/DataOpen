@@ -414,7 +414,7 @@ class Gateway:
         if self.calibrating and self.learner is not None:
             self.learner.poll(now)
             if now >= self.next_live:
-                self.next_live = now + 1_000_000
+                self.next_live = now + 250_000
                 try:
                     self.live_progress = profile_progress(ProfileView(self.learner.snapshot().pack()))
                 except ProfileError:

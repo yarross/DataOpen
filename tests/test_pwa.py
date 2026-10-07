@@ -101,3 +101,37 @@ def test_the_client_against_the_real_gateway_and_bridge_core():
             p.wait(10)
         except subprocess.TimeoutExpired:
             p.kill()
+
+
+PLAYWRIGHT_MODULES = os.environ.get("PLAYWRIGHT_NODE_MODULES") or "/opt/node22/lib/node_modules"
+needs_playwright = pytest.mark.skipif(not (Path(PLAYWRIGHT_MODULES) / "playwright").exists(), reason="Playwright is not installed")
+
+
+@needs_node
+@needs_cc
+@needs_playwright
+def test_the_page_in_a_real_chromium(tmp_path):
+    """Not run in CI (no Playwright there). Phone-sized Chromium against the simulator: layout, sizes, contrast as rendered, taps, the
+    repeat-tap guard, the two-step bypass, files, calibration, and a reload with no network at all."""
+    p = subprocess.Popen([sys.executable, "-m", "dataopen.cli", "ctl", "serve-sim", "--port", "0", "--trial-s", "20"], cwd=ROOT,
+                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env={**os.environ, "PYTHONUNBUFFERED": "1"})
+    try:
+        url = None
+        end = time.time() + 90
+        while time.time() < end and url is None:
+            line = p.stdout.readline()
+            m = re.search(r"http://127\.0\.0\.1:\d+/", line)
+            url = m.group(0) if m else None
+            if not line and p.poll() is not None:
+                break
+        assert url
+        env = {**os.environ, "DATAOPEN_SIM_URL": url, "PLAYWRIGHT_NODE_MODULES": PLAYWRIGHT_MODULES, "DATAOPEN_SHOTS": str(tmp_path)}
+        r = subprocess.run([NODE, str(PWA / "tests" / "browser.mjs")], capture_output=True, text=True, env=env, timeout=400, cwd=ROOT)
+        assert r.returncode == 0, r.stdout[-4000:] + r.stderr[-2000:]
+        assert "failed 0" in r.stdout and r.stdout.count("\nok - ") + r.stdout.startswith("ok - ") >= 12
+    finally:
+        p.terminate()
+        try:
+            p.wait(10)
+        except subprocess.TimeoutExpired:
+            p.kill()

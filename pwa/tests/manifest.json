@@ -1,0 +1,215 @@
+{
+  "schema": 1,
+  "rev": 1,
+  "title": {
+    "ru": "Помощь при работе с мышью",
+    "en": "Mouse assistance"
+  },
+  "pages": [
+    {
+      "id": "main",
+      "title": {
+        "ru": "Помощь",
+        "en": "Assistance"
+      },
+      "controls": [
+        {
+          "id": "assist",
+          "type": "toggle",
+          "key": "assist.on",
+          "confirm": "revert",
+          "label": {
+            "ru": "Помощь",
+            "en": "Assistance"
+          },
+          "help": {
+            "ru": "Включает коррекцию движения мыши. Если станет хуже, нажмите «Вернуть».",
+            "en": "Turns the pointer correction on. If it gets worse, press Undo."
+          }
+        },
+        {
+          "id": "strength",
+          "type": "stepper",
+          "key": "assist.strength",
+          "min": 0,
+          "max": 10,
+          "marks": {
+            "0": {
+              "ru": "Выкл",
+              "en": "Off"
+            },
+            "5": {
+              "ru": "Как рекомендует профиль",
+              "en": "As the profile recommends"
+            },
+            "10": {
+              "ru": "Максимум",
+              "en": "Maximum"
+            }
+          },
+          "confirm": "revert",
+          "label": {
+            "ru": "Сила помощи",
+            "en": "Assistance strength"
+          },
+          "help": {
+            "ru": "Насколько сильно помощь тормозит курсор у кнопок и значков.",
+            "en": "How strongly the pointer is slowed near buttons and icons."
+          }
+        },
+        {
+          "id": "tremor",
+          "type": "stepper",
+          "key": "tremor.level",
+          "min": 0,
+          "max": 10,
+          "marks": {
+            "0": {
+              "ru": "Выкл",
+              "en": "Off"
+            },
+            "5": {
+              "ru": "Как рекомендует профиль",
+              "en": "As the profile recommends"
+            },
+            "10": {
+              "ru": "Максимум",
+              "en": "Maximum"
+            }
+          },
+          "confirm": "revert",
+          "label": {
+            "ru": "Подавление дрожи",
+            "en": "Tremor filter"
+          },
+          "help": {
+            "ru": "Насколько сильно убирается дрожь руки. Само движение не добавляется.",
+            "en": "How much hand tremor is taken out. No motion is ever added."
+          }
+        }
+      ]
+    },
+    {
+      "id": "profile",
+      "title": {
+        "ru": "Профиль",
+        "en": "Profile"
+      },
+      "controls": [
+        {
+          "id": "fill",
+          "type": "meter",
+          "key": "profile.fill",
+          "min": 0,
+          "max": 100,
+          "fmt": "{v} %",
+          "label": {
+            "ru": "Профиль собран",
+            "en": "Profile collected"
+          },
+          "help": {
+            "ru": "Сколько наблюдений уже накоплено. Это не оценка качества.",
+            "en": "How many observations were collected. Not a quality score."
+          }
+        },
+        {
+          "id": "layers",
+          "type": "status",
+          "key": "profile.layers",
+          "map": {
+            "none": {
+              "ru": "Данных пока мало",
+              "en": "Not enough data yet"
+            },
+            "asc": {
+              "ru": "Готова помощь при движении",
+              "en": "Movement help is ready"
+            },
+            "tremor": {
+              "ru": "Готово подавление дрожи",
+              "en": "Tremor filter is ready"
+            },
+            "both": {
+              "ru": "Готово всё",
+              "en": "Everything is ready"
+            }
+          },
+          "label": {
+            "ru": "Что уже готово",
+            "en": "What is ready"
+          }
+        },
+        {
+          "id": "calib",
+          "type": "toggle",
+          "key": "calib.running",
+          "confirm": "none",
+          "label": {
+            "ru": "Калибровка",
+            "en": "Calibration"
+          },
+          "help": {
+            "ru": "Пока идёт калибровка, помощь выключена: устройство изучает ваши обычные движения. Работайте с мышью как всегда.",
+            "en": "While calibrating, assistance is off: the device learns your usual movements. Use the mouse as always."
+          }
+        },
+        {
+          "id": "import",
+          "type": "file",
+          "op": "bundle_put",
+          "accept": ".dobundle",
+          "max_bytes": 4096,
+          "label": {
+            "ru": "Загрузить файл настроек",
+            "en": "Load a settings file"
+          }
+        },
+        {
+          "id": "export",
+          "type": "file",
+          "op": "bundle_get",
+          "accept": ".dobundle",
+          "max_bytes": 4096,
+          "label": {
+            "ru": "Сохранить файл настроек",
+            "en": "Save a settings file"
+          }
+        },
+        {
+          "id": "restore",
+          "type": "action",
+          "key": "profile.restore",
+          "confirm": "two-step",
+          "label": {
+            "ru": "Вернуть прежний профиль",
+            "en": "Restore the previous profile"
+          }
+        }
+      ]
+    },
+    {
+      "id": "device",
+      "title": {
+        "ru": "Устройство",
+        "en": "Device"
+      },
+      "controls": [
+        {
+          "id": "forget",
+          "type": "action",
+          "key": "pairing.forget",
+          "confirm": "two-step",
+          "danger": true,
+          "label": {
+            "ru": "Забыть все телефоны",
+            "en": "Forget all phones"
+          },
+          "help": {
+            "ru": "Потребуется нажать кнопку на самом устройстве.",
+            "en": "You will need to press the button on the device itself."
+          }
+        }
+      ]
+    }
+  ]
+}

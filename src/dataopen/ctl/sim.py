@@ -167,7 +167,8 @@ class World:
         self.spi_loss = 0.0
         self.rng = random.Random(seed)
         self.dir = Path(directory)
-        self.gw_args = dict(manifest=manifest, learner=learner, trial_s=trial_s, spi_period_us=spi_period_us, **gw_kw)
+        self.gw_args = dict(chunk_cap=P.CHUNK_MAX, manifest=manifest, learner=learner, trial_s=trial_s,
+                            spi_period_us=spi_period_us, **gw_kw)
         self.gw: Gateway
         self.phone: SimPhone
         self.rig.module = _Ticker(self)  # type: ignore[assignment]

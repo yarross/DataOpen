@@ -70,7 +70,7 @@ def default_manifest(rev: int = 1) -> dict:
                 {"id": "restore", "type": "action", "key": "profile.restore", "confirm": "two-step",
                  "label": L("Вернуть прежний профиль", "Restore the previous profile")},
             ]},
-            {"id": "more", "title": L("Ещё", "More"), "controls": [
+            {"id": "device", "title": L("Устройство", "Device"), "controls": [
                 {"id": "forget", "type": "action", "key": "pairing.forget", "confirm": "two-step", "danger": True,
                  "label": L("Забыть все телефоны", "Forget all phones"),
                  "help": L("Потребуется нажать кнопку на самом устройстве.", "You will need to press the button on the device itself.")},

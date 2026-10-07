@@ -107,7 +107,8 @@ class Gateway:
                  notify_status: Callable[[bytes], None] = lambda b: None, clock_us: Optional[Callable[[], int]] = None,
                  manifest: Optional[Manifest] = None, learner: Optional[Learner] = None, device_id: bytes = b"DO01",
                  trial_s: int = 20, spi_period_us: int = 10_000, params_period_us: int = 1_000_000, cmd_period_us: int = 1_000_000,
-                 status_period_us: int = 250_000, on_forget: Callable[[], None] = lambda: None) -> None:
+                 status_period_us: int = 250_000, on_forget: Callable[[], None] = lambda: None,
+                 chunk_cap: int = P.CHUNK_DEFAULT) -> None:
         self.dir = Path(directory)
         self.dir.mkdir(parents=True, exist_ok=True)
         self.spi, self.notify, self.notify_status = spi, notify, notify_status
@@ -119,6 +120,7 @@ class Gateway:
         self.spi_period_us, self.params_period_us, self.cmd_period_us, self.status_period_us = (
             spi_period_us, params_period_us, cmd_period_us, status_period_us)
         self.on_forget = on_forget
+        self.chunk_cap = min(max(chunk_cap, P.CHUNK_MIN), P.CHUNK_MAX)       # what the transport can really deliver (BLE: ATT MTU - 3)
         self.started_us = self.clock()
         # persisted state
         self.settings_store = SettingsStore(self.dir / "settings")
@@ -340,6 +342,7 @@ class Gateway:
         if run and not self.calibrating:
             self.learner.start(now)
             self.calibrating = True
+            self.live_progress = Progress(0, False, "collecting", {})       # the NEW profile's progress starts at zero
         elif not run and self.calibrating:
             self.calibrating = False
             self.learner.stop(now)
@@ -399,7 +402,7 @@ class Gateway:
 
     def read_info(self) -> bytes:
         caps = (CAP_CALIBRATION if self.learner is not None else 0) | CAP_BUNDLE
-        return P.Info(caps, self.device_id, self.manifest.hash, self.manifest.rev, self.chunk).pack()
+        return P.Info(caps, self.device_id, self.manifest.hash, self.manifest.rev, self.chunk_cap).pack()
 
     # ------------------------------------------------------------------------------------------------------ main loop
     def tick(self, now: Optional[int] = None) -> None:
@@ -438,6 +441,7 @@ class Gateway:
             self.notify(c)
 
     def _ack(self, req: int, **extra) -> None:
+        self._publish(self.clock())              # the state change goes out BEFORE the answer: when `set()` resolves it is current
         self._send(P.pack_json(P.T_ACK, req, {"ok": True, "rev": self.state_rev, "trial": self._trial_left(self.clock()), **extra}))
 
     def _err(self, req: int, code: int, detail: str = "") -> None:
@@ -480,7 +484,7 @@ class Gateway:
             j = m.json()
             if j.get("v") != P.VER:
                 raise _Refuse(P.E.BAD_VERSION, f"v={j.get('v')}")
-            self.chunk = min(max(int(j.get("chunk", P.CHUNK_DEFAULT)), P.CHUNK_MIN), P.CHUNK_MAX)
+            self.chunk = min(max(int(j.get("chunk", P.CHUNK_DEFAULT)), P.CHUNK_MIN), self.chunk_cap)
             self.session = True
             self._send(P.pack_json(P.T_HELLO_R, m.req, {"v": P.VER, "chunk": self.chunk, "device": self.device_id.hex(), "fw": FW,
                                                           "manifest_rev": self.manifest.rev, "manifest_hash": self.manifest.hash.hex(),

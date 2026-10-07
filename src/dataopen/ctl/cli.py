@@ -40,6 +40,17 @@ def _golden(a) -> int:
     return EXIT_OK
 
 
+def _pwa_build(a) -> int:
+    from .pwa import build, is_current, pwa_root
+    root = Path(a.root) if a.root else pwa_root()
+    if a.check:
+        ok = is_current(root)
+        print("current" if ok else "stale: run `dataopen ctl pwa-build`")
+        return EXIT_OK if ok else EXIT_FAILED
+    print(f"service worker and js/build.js updated, version {build(root)}")
+    return EXIT_OK
+
+
 def _simulate(a) -> int:
     """A scripted session of a simulated phone against the gateway and the real bridge core: the whole chain, printed."""
     import tempfile
@@ -101,6 +112,10 @@ def register(sub) -> None:
     g = ss.add_parser("golden", help="write the cross-language test vectors")
     g.add_argument("--out", default="pwa/tests/golden.json")
     g.set_defaults(fn=_golden)
+    b = ss.add_parser("pwa-build", help="write the service worker's file list and the cache version into pwa/")
+    b.add_argument("--root")
+    b.add_argument("--check", action="store_true", help="only check that the committed files are current")
+    b.set_defaults(fn=_pwa_build)
     r = ss.add_parser("simulate", help="a scripted phone session against the gateway and the real bridge core")
     r.add_argument("--dir", help="gateway directory (default: a temporary one)")
     r.add_argument("--profile", default="tremor", help="simulated person for the starting profile: steady, overshooter, tremor, none")
@@ -112,4 +127,5 @@ def register(sub) -> None:
     v.add_argument("--root", help="the pwa directory (default: the repository's pwa/)")
     v.add_argument("--profile", default="tremor")
     v.add_argument("--dir")
+    v.add_argument("--trial-s", dest="trial_s", type=int, default=20)
     v.set_defaults(fn=_serve)

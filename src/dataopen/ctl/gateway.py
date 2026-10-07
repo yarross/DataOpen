@@ -11,6 +11,8 @@ Rules (docs/PWA.md section 5):
   * 'turn assistance off' needs no session and no manifest and is persisted: a gateway restart never turns assistance back on
   * the phone disconnecting changes nothing about how the device works
   * everything the phone asks is checked against the same manifest that was sent to it
+  * the device's own files are encrypted at rest; a settings file leaves the device only sealed to ONE device and opens only on that one
+    (docs/SECURITY.md); whatever could move the personal profile elsewhere, or throw it away, needs the button on the device itself
 """
 from __future__ import annotations
 
@@ -28,11 +30,18 @@ from ..bioprofile.store import ProfileStore
 from ..bridge import protocol as BP
 from . import bundle as B
 from . import protocol as P
+from . import seal as SL
 from . import tuning as T
-from .manifest import Manifest
+from .identity import Card, CardError, FileKeyStore, KeyStore, load_identity, provision
+from .manifest import Manifest, validate_manifest
+from .vault import Vault, VaultError
 
-FW = "ctl-1"
+FW = "ctl-2"
 CAP_CALIBRATION, CAP_BUNDLE = 1, 2
+MAX_TRUSTED = 16
+SEAL_CODES = {"damaged": (P.E.BAD_BUNDLE, "damaged"), "version": (P.E.BAD_BUNDLE, "version"), "unsupported": (P.E.UNSUPPORTED, "section"),
+              "wrong_device": (P.E.WRONG_DEVICE, "wrong_device"), "bad_signature": (P.E.BAD_SIGNATURE, "bad_signature"),
+              "replay": (P.E.REPLAY, "replay"), "plain_refused": (P.E.PLAIN_REFUSED, "plain")}
 
 
 class Learner(Protocol):
@@ -54,19 +63,20 @@ class Settings:
 
 
 class SettingsStore:
-    """Two slot files, newest valid wins (same idea as ProfileStore), JSON + CRC32 inside."""
+    """Two slot files, newest valid wins (same idea as ProfileStore), JSON + CRC32 inside; encrypted at rest when given a vault."""
 
-    def __init__(self, base: Path) -> None:
+    def __init__(self, base: Path, vault: Optional[Vault] = None) -> None:
+        self.base, self.vault = base, vault
         self.slots = [base.with_name(base.name + ".a"), base.with_name(base.name + ".b")]
 
     def _read(self, p: Path) -> Optional[dict]:
         try:
-            raw = p.read_bytes()
+            raw = self.vault.read(p, self.base.name) if self.vault else p.read_bytes()
             if len(raw) < 5 or struct.unpack_from("<I", raw, len(raw) - 4)[0] != P.crc32(raw[:-4]):
                 return None
             d = json.loads(raw[:-4].decode("utf-8"))
             return d if isinstance(d, dict) and isinstance(d.get("n"), int) else None
-        except (OSError, ValueError):
+        except (OSError, ValueError, VaultError):
             return None
 
     def load(self) -> dict:
@@ -83,8 +93,9 @@ class SettingsStore:
         older = min(self.slots, key=lambda p: (self._read(p) or {"n": -1})["n"])
         body = json.dumps(data, separators=(",", ":")).encode()
         tmp = older.with_name(older.name + ".tmp")
+        blob = body + struct.pack("<I", P.crc32(body))
         with open(tmp, "wb") as f:
-            f.write(body + struct.pack("<I", P.crc32(body)))
+            f.write(self.vault.seal(self.base.name, blob) if self.vault else blob)
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, older)
@@ -105,17 +116,19 @@ def _lvl(v: int) -> int:
 class Gateway:
     def __init__(self, directory: str | Path, *, spi: Callable[[bytes], bytes], notify: Callable[[bytes], None],
                  notify_status: Callable[[bytes], None] = lambda b: None, clock_us: Optional[Callable[[], int]] = None,
-                 manifest: Optional[Manifest] = None, learner: Optional[Learner] = None, device_id: bytes = b"DO01",
-                 trial_s: int = 20, spi_period_us: int = 10_000, params_period_us: int = 1_000_000, cmd_period_us: int = 1_000_000,
-                 status_period_us: int = 250_000, on_forget: Callable[[], None] = lambda: None,
+                 manifest: Optional[Manifest] = None, learner: Optional[Learner] = None, keystore: Optional[KeyStore] = None,
+                 allow_plain_import: bool = False, trial_s: int = 20, spi_period_us: int = 10_000, params_period_us: int = 1_000_000,
+                 cmd_period_us: int = 1_000_000, status_period_us: int = 250_000, on_forget: Callable[[], None] = lambda: None,
                  chunk_cap: int = P.CHUNK_DEFAULT) -> None:
         self.dir = Path(directory)
         self.dir.mkdir(parents=True, exist_ok=True)
         self.spi, self.notify, self.notify_status = spi, notify, notify_status
         self.clock = clock_us or (lambda: time.monotonic_ns() // 1000)
-        self.manifest = manifest or Manifest()
         self.learner = learner
-        self.device_id = (device_id + b"\0" * 4)[:4]
+        self.allow_plain_import = allow_plain_import
+        self.keystore = keystore or FileKeyStore(self.dir / "keys" / "keys.json")
+        self.identity = load_identity(self.keystore)
+        self.vault = Vault(self.identity.storage_key)
         self.trial_s = trial_s
         self.spi_period_us, self.params_period_us, self.cmd_period_us, self.status_period_us = (
             spi_period_us, params_period_us, cmd_period_us, status_period_us)
@@ -123,13 +136,13 @@ class Gateway:
         self.chunk_cap = min(max(chunk_cap, P.CHUNK_MIN), P.CHUNK_MAX)       # what the transport can really deliver (BLE: ATT MTU - 3)
         self.started_us = self.clock()
         # persisted state
-        self.settings_store = SettingsStore(self.dir / "settings")
+        self._open_stores()
         saved = self.settings_store.load()
         self.settings = Settings(bool(saved.get("assist_wanted", False)), _lvl(saved.get("strength", T.LEVEL_DEFAULT)),
                                  _lvl(saved.get("tremor", T.LEVEL_DEFAULT)))
         self.epoch = (int(saved.get("epoch", 0)) + 1) & 0xFFFF           # generations never go backwards across restarts
-        self.profile_store = ProfileStore(self.dir / "profile")
-        self.prev_path = self.dir / "profile.prev"
+        self.manifest = manifest or self._load_manifest()
+        self.custom_manifest = manifest is None and self._manifest_path().exists()
         self.view: Optional[ProfileView] = None
         self.profile_error = ""
         self._load_profile()
@@ -170,6 +183,45 @@ class Gateway:
         self._publish(self.clock(), force_status=True)
 
     # ------------------------------------------------------------------------------------------------------ persistence
+    def _open_stores(self) -> None:
+        self.settings_store = SettingsStore(self.dir / "settings", self.vault)
+        self.profile_store = ProfileStore(self.dir / "profile", codec=self.vault)
+        self.trust_store = SettingsStore(self.dir / "trust", self.vault)
+        self.prev_path = self.dir / "profile.prev"
+        for base in ("profile", "settings", "trust"):          # a device that predates the vault: seal what is still plain, both slots
+            for slot in ("a", "b"):
+                self.vault.migrate(self.dir / f"{base}.{slot}", base)
+        self.vault.migrate(self.prev_path, "profile.prev")
+        t = self.trust_store.load()
+        self.trust: dict = {"senders": dict(t["senders"]) if isinstance(t.get("senders"), dict) else {}}
+
+    def _manifest_path(self) -> Path:
+        return self.dir / "manifest.json"
+
+    def _load_manifest(self) -> Manifest:
+        """The manifest the device was given by a trusted sender, else the built-in one."""
+        try:
+            m = json.loads(self.vault.read(self._manifest_path(), "manifest.json").decode("utf-8"))
+            if not validate_manifest(m):
+                return Manifest(m)
+        except (OSError, ValueError, VaultError):
+            pass
+        return Manifest()
+
+    def _set_manifest(self, m: Manifest) -> None:
+        tmp = self._manifest_path().with_name("manifest.json.tmp")
+        tmp.write_bytes(self.vault.seal("manifest.json", m.raw))
+        os.replace(tmp, self._manifest_path())
+        self.manifest, self.custom_manifest = m, True
+        self._manifest_changed()
+
+    def _manifest_changed(self) -> None:
+        if self.session:                                     # the phone is told, and fetches the new one (it caches by hash)
+            self._send(P.pack_json(P.T_EVENT, 0, {"rev": self.state_rev, "state": {}, "manifest": self.manifest.hash.hex()}))
+
+    def _save_trust(self) -> None:
+        self.trust_store.save(self.trust)
+
     def _persist(self) -> None:
         t = self.trial
         trial = None
@@ -210,7 +262,7 @@ class Gateway:
         """Make `state` the profile. The one it replaces is kept for 'restore the previous profile'; with assistance on it is a trial."""
         prev = self._profile_pack()
         if prev is not None:
-            self.prev_path.write_bytes(prev)
+            self.prev_path.write_bytes(self.vault.seal("profile.prev", prev))
         if self.settings.assist_wanted:
             if self.trial is None:
                 self.trial = _Trial(now + self.trial_s * 1_000_000, self.settings, prev, True)
@@ -361,7 +413,7 @@ class Gateway:
         layers = "both" if pr.asc_ready and pr.tremor_ready else "asc" if pr.asc_ready else "tremor" if pr.tremor_ready else "none"
         return {"assist.on": self.settings.assist_wanted, "assist.strength": self.settings.strength, "tremor.level": self.settings.tremor,
                 "calib.running": self.calibrating, "profile.fill": pr.fill, "profile.layers": layers, "profile.tremor": pr.tremor,
-                "trial.left_s": self._trial_left(now)}
+                "device.id": self.identity.id, "trusted.count": len(self.trust["senders"]), "trial.left_s": self._trial_left(now)}
 
     def _trial_left(self, now: int) -> int:
         return 0 if self.trial is None else max(0, -(-(self.trial.deadline_us - now) // 1_000_000))
@@ -402,7 +454,7 @@ class Gateway:
 
     def read_info(self) -> bytes:
         caps = (CAP_CALIBRATION if self.learner is not None else 0) | CAP_BUNDLE
-        return P.Info(caps, self.device_id, self.manifest.hash, self.manifest.rev, self.chunk_cap).pack()
+        return P.Info(caps, self.identity.digest[:4], self.manifest.hash, self.manifest.rev, self.chunk_cap).pack()
 
     # ------------------------------------------------------------------------------------------------------ main loop
     def tick(self, now: Optional[int] = None) -> None:
@@ -486,7 +538,7 @@ class Gateway:
                 raise _Refuse(P.E.BAD_VERSION, f"v={j.get('v')}")
             self.chunk = min(max(int(j.get("chunk", P.CHUNK_DEFAULT)), P.CHUNK_MIN), self.chunk_cap)
             self.session = True
-            self._send(P.pack_json(P.T_HELLO_R, m.req, {"v": P.VER, "chunk": self.chunk, "device": self.device_id.hex(), "fw": FW,
+            self._send(P.pack_json(P.T_HELLO_R, m.req, {"v": P.VER, "chunk": self.chunk, "device": self.identity.id, "fw": FW,
                                                           "manifest_rev": self.manifest.rev, "manifest_hash": self.manifest.hash.hex(),
                                                           "trial_s": self.trial_s}))
             return
@@ -498,8 +550,10 @@ class Gateway:
                 self._send(P.pack_message(P.T_DATA, m.req, self.manifest.raw))
             elif what == P.GET_STATE:
                 self._send(P.pack_json(P.T_DATA, m.req, {"rev": self.state_rev, "state": self.state_tree(now)}))
+            elif what == P.GET_IDENTITY:
+                self._send(P.pack_json(P.T_DATA, m.req, self.identity.card().to_json()))
             elif what == P.GET_BUNDLE:
-                self._send(P.pack_message(P.T_DATA, m.req, self._export_bundle()))
+                self._send(P.pack_message(P.T_DATA, m.req, self._export_bundle(m.json().get("for", "self"), now)))
             else:
                 raise _Refuse(P.E.BAD_KEY, "get what?")
         elif t == P.T_SET:
@@ -524,7 +578,7 @@ class Gateway:
             self._send_cmd(self._cmd_now(), now)
             self._ack(m.req)
         elif t == P.T_BUNDLE_PUT:
-            if len(m.body) > self.manifest.max_file_bytes("bundle_put"):
+            if len(m.body) > SL.MAX_FILE:
                 raise _Refuse(P.E.TOO_BIG, "bundle")
             self._import_bundle(m.body, now)
             self._ack(m.req)
@@ -548,30 +602,93 @@ class Gateway:
         else:
             raise _Refuse(P.E.BAD_KEY, key)
 
+    def _need_button(self, now: int, detail: str) -> None:
+        """Spend the press of the button on the device (one press, one use, 30 s), or refuse and say what is being asked for."""
+        if now > self.physical_until:
+            raise _Refuse(P.E.PHYSICAL, detail)
+        self.physical_until = -1
+
     def _do_act(self, key: str, now: int) -> None:
         if key == "profile.restore":
             try:
-                prev = ProfileState.unpack(self.prev_path.read_bytes())
-            except (OSError, ProfileError):
+                prev = ProfileState.unpack(self.vault.read(self.prev_path, "profile.prev"))
+            except (OSError, ProfileError, VaultError):
                 raise _Refuse(P.E.NO_PROFILE, "nothing to restore") from None
             self._install_profile(prev, now)
         elif key == "pairing.forget":
-            if now > self.physical_until:
-                raise _Refuse(P.E.PHYSICAL, "press the button on the device")
-            self.physical_until = -1
+            self._need_button(now, "press the button on the device")
             self.on_forget()
+        elif key in ("erase.profile", "factory.reset"):
+            self._need_button(now, "erase")
+            self._erase(now, factory=key == "factory.reset")
         else:
             raise _Refuse(P.E.BAD_KEY, key)
 
-    def _export_bundle(self) -> bytes:
-        st = None
+    # ------------------------------------------------------------------------------------------------------ the sealed file
+    def _export_bundle(self, target, now: int) -> bytes:
+        """The profile and the two levels, sealed to `target` ('self', or another device's card). Another device's card needs the button
+        here: otherwise a stolen, paired phone could carry the personal profile out under somebody else's key."""
+        if target == "self":
+            card = self.identity.card()
+        else:
+            try:
+                card = Card.from_json(target)
+            except CardError as e:
+                raise _Refuse(P.E.BAD_BUNDLE, "card") from e
+        if card.digest != self.identity.digest:
+            self._need_button(now, f"export:{card.id}")
         try:
             st = self.profile_store.load()
         except ProfileError:
-            pass
-        return B.Bundle("DataOpen", time.strftime("%Y-%m-%d", time.gmtime()), self.settings.strength, self.settings.tremor, st).pack()
+            st = None
+        man = self.manifest.m if self.custom_manifest else None
+        meta = {"name": "DataOpen", "created": time.strftime("%Y-%m-%d", time.gmtime())}
+        return SL.seal(self.identity, card, self.identity.next_seq(), profile=st, tuning=(self.settings.strength, self.settings.tremor),
+                       manifest=man, meta=meta)
 
     def _import_bundle(self, raw: bytes, now: int) -> None:
+        if raw[:4] == b"DOBN":
+            if not self.allow_plain_import:
+                raise _Refuse(P.E.PLAIN_REFUSED, "plain")
+            self._import_plain(raw, now)
+            return
+        if raw[:4] != SL.MAGIC:
+            raise _Refuse(P.E.BAD_BUNDLE, "damaged")
+        try:
+            o = SL.open_sealed(raw, self.identity)
+        except SL.SealError as e:
+            code, detail = SEAL_CODES[e.key]
+            raise _Refuse(code, detail) from None
+        if self.calibrating:
+            raise _Refuse(P.E.BUSY, "calibrating")
+        man = None
+        if o.manifest is not None:
+            if validate_manifest(o.manifest):
+                raise _Refuse(P.E.BAD_BUNDLE, "damaged")
+            man = Manifest(o.manifest)
+        rec = None
+        if not o.is_self:                                        # a copy of one's own is always welcome; anything else needs to be known
+            fp = o.sender_digest.hex()
+            rec = self.trust["senders"].get(fp)
+            if rec is not None and o.seq <= rec["last_seq"]:
+                raise _Refuse(P.E.REPLAY, "replay")
+            if rec is None:
+                if len(self.trust["senders"]) >= MAX_TRUSTED:
+                    raise _Refuse(P.E.NOT_ALLOWED, "trust list full")
+                self._need_button(now, f"trust:{o.sender_id}")
+                rec = {"id": o.sender_id}
+                self.trust["senders"][fp] = rec
+            rec["last_seq"] = o.seq
+            self._save_trust()
+        if o.profile is not None:
+            self._install_profile(o.profile, now)
+        if o.tuning is not None:
+            self._apply(replace(self.settings, strength=o.tuning[0], tremor=o.tuning[1]), now)
+        if man is not None:
+            self._set_manifest(man)
+
+    def _import_plain(self, raw: bytes, now: int) -> None:
+        """The old open format: only when the device was configured to take it (a migration aid, never the default)."""
         try:
             b = B.unpack(raw)
         except B.BundleError as e:
@@ -581,6 +698,36 @@ class Gateway:
         if b.profile is not None:
             self._install_profile(b.profile, now)
         self._apply(replace(self.settings, strength=b.strength, tremor=b.tremor), now)
+
+    # ------------------------------------------------------------------------------------------------------ erase
+    def _erase(self, now: int, factory: bool) -> None:
+        """Throw away everything personal. The storage key changes, so older ciphertext can never be read again even where the flash keeps
+        old blocks; a factory reset also makes the device someone else (new keys, new ID, every file sealed to the old one is dead)."""
+        if self.calibrating:
+            self.calibrating = False
+            if self.learner is not None:
+                self.learner.stop(now)
+            self.live_progress = None
+        self.trial = None
+        for pattern in ("profile.*", "settings.*", "trust.*", "manifest.json*"):
+            for p in self.dir.glob(pattern):
+                try:
+                    p.unlink()
+                except OSError:
+                    pass
+        if factory:
+            self.identity = provision(self.keystore)
+        else:
+            self.identity.rotate_storage_key()
+        self.vault = Vault(self.identity.storage_key)
+        self._open_stores()
+        self.view, self.profile_error = None, ""
+        self.settings = Settings()
+        self.manifest, self.custom_manifest = Manifest(), False
+        self._persist()
+        self._rederive()
+        self._send_cmd(BP.CMD_PASSTHRU, now)
+        self._manifest_changed()
 
 
 class _Refuse(Exception):

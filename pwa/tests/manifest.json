@@ -158,10 +158,14 @@
           "type": "file",
           "op": "bundle_put",
           "accept": ".dobundle",
-          "max_bytes": 4096,
+          "max_bytes": 16000,
           "label": {
             "ru": "Загрузить файл настроек",
             "en": "Load a settings file"
+          },
+          "help": {
+            "ru": "Откроется только файл, сделанный для этого устройства.",
+            "en": "Only a file made for this device will open."
           }
         },
         {
@@ -169,10 +173,29 @@
           "type": "file",
           "op": "bundle_get",
           "accept": ".dobundle",
+          "max_bytes": 16000,
+          "label": {
+            "ru": "Сохранить копию для этого устройства",
+            "en": "Save a copy for this device"
+          },
+          "help": {
+            "ru": "Файл зашифрован и откроется только на этом устройстве.",
+            "en": "The file is encrypted and opens only on this device."
+          }
+        },
+        {
+          "id": "export_other",
+          "type": "file",
+          "op": "bundle_for_card",
+          "accept": ".docard",
           "max_bytes": 4096,
           "label": {
-            "ru": "Сохранить файл настроек",
-            "en": "Save a settings file"
+            "ru": "Сохранить для другого устройства",
+            "en": "Save for another device"
+          },
+          "help": {
+            "ru": "Выберите карточку устройства-получателя и сверьте его номер с наклейкой. Потребуется нажать кнопку на этом устройстве.",
+            "en": "Choose the other device's card and check its number against its label. You will need to press the button on this device."
           }
         },
         {
@@ -195,6 +218,39 @@
       },
       "controls": [
         {
+          "id": "device_id",
+          "type": "status",
+          "key": "device.id",
+          "label": {
+            "ru": "Номер устройства",
+            "en": "Device number"
+          }
+        },
+        {
+          "id": "trusted",
+          "type": "status",
+          "key": "trusted.count",
+          "label": {
+            "ru": "Откуда принимаются файлы (кроме своих копий)",
+            "en": "Where files are accepted from (besides your own copies)"
+          }
+        },
+        {
+          "id": "card",
+          "type": "file",
+          "op": "card_get",
+          "accept": ".docard",
+          "max_bytes": 4096,
+          "label": {
+            "ru": "Сохранить карточку устройства",
+            "en": "Save the device card"
+          },
+          "help": {
+            "ru": "Карточку можно передавать: по ней нельзя прочитать ничего личного, можно только подготовить файл для этого устройства.",
+            "en": "The card is safe to share: it reveals nothing personal, it only lets a file be prepared for this device."
+          }
+        },
+        {
           "id": "forget",
           "type": "action",
           "key": "pairing.forget",
@@ -207,6 +263,36 @@
           "help": {
             "ru": "Потребуется нажать кнопку на самом устройстве.",
             "en": "You will need to press the button on the device itself."
+          }
+        },
+        {
+          "id": "erase",
+          "type": "action",
+          "key": "erase.profile",
+          "confirm": "two-step",
+          "danger": true,
+          "label": {
+            "ru": "Стереть личные данные",
+            "en": "Erase personal data"
+          },
+          "help": {
+            "ru": "Удаляет профиль, настройки и список доверенных. Помощь выключится. Потребуется нажать кнопку на устройстве.",
+            "en": "Deletes the profile, the settings and the trusted list. Assistance turns off. You will need to press the button on the device."
+          }
+        },
+        {
+          "id": "factory",
+          "type": "action",
+          "key": "factory.reset",
+          "confirm": "two-step",
+          "danger": true,
+          "label": {
+            "ru": "Заводской сброс",
+            "en": "Factory reset"
+          },
+          "help": {
+            "ru": "То же, и устройство получит новый номер: все файлы, сделанные для него, перестанут открываться. Нужна кнопка на устройстве.",
+            "en": "The same, and the device gets a new number: every file made for it stops opening. You will need the button on the device."
           }
         }
       ]

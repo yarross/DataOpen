@@ -10,8 +10,9 @@ requires-python = ">=3.10"
 dependencies = ["numpy>=1.24", "tomli>=2; python_version < '3.11'"]
 
 [project.optional-dependencies]
-dev = ["pytest>=7", "lupa>=2", "ruff", "onnx", "onnxruntime>=1.17"]
+dev = ["pytest>=7", "lupa>=2", "ruff", "onnx", "onnxruntime>=1.17", "cryptography>=42"]
 capture = ["mss>=9", "pillow>=10"]
+secure = ["cryptography>=42"]                        # the control gateway: device identity, sealed settings files, encrypted data at rest
 quality = ["onnxruntime>=1.17"]
 train = ["torch>=2.2", "pillow>=10", "onnx", "onnxruntime>=1.17"]   # the detector: dataopen detector train|export|quantize
 

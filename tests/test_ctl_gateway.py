@@ -573,9 +573,9 @@ def test_calibration_learns_a_profile_while_assistance_is_held_off(tmp_path, lea
     assert fills == sorted(fills) and fills[-1] > fills[0] >= 0
     w.run(3000)
     assert w.gw.status().fill >= 95
-    assert ProfileStore(w.dir / "profile").load() is None               # nothing is stored until the calibration is finished
+    assert pstore(w).load() is None               # nothing is stored until the calibration is finished
     ok(ph.set("calib.running", False))
-    st = ProfileStore(w.dir / "profile").load()
+    st = pstore(w).load()
     assert st is not None and st.generation == 1
     assert w.gw.status().flags & P.SF_CALIBRATING == 0
     w.run(500)
@@ -610,95 +610,334 @@ def test_stopping_calibration_with_no_data_keeps_the_old_profile(tmp_path, tremo
     w = world(tmp_path, tremor_dir, learner=SimLearner(speed=0.001))
     ph = w.phone
     ph.connect()
-    before = ProfileStore(w.dir / "profile").load().generation
+    before = pstore(w).load().generation
     ph.set("calib.running", True)
     w.run(500)
     ph.set("calib.running", False)
-    assert ProfileStore(w.dir / "profile").load().generation == before
+    assert pstore(w).load().generation == before
 
 
-# ---------------------------------------------------------------------------------------------------------------- bundles
+# ---------------------------------------------------------------------------------------------------------------- sealed files
 def profile_stats(view: ProfileView):
     return {k: (round(v["median"], 3), v["n"]) for k, v in view.as_dict()["metrics"].items()}
 
 
-def test_a_bundle_moves_a_profile_and_the_knobs_between_devices(tmp_path, tremor_dir):
-    a = world(tmp_path / "a", tremor_dir)
-    a.phone.connect()
+def pstore(w) -> ProfileStore:
+    return ProfileStore(w.dir / "profile", codec=w.gw.vault)
+
+
+def duo(tmp_path, tremor_dir, **kw):
+    """Two devices: A with a learned profile, B empty."""
+    return world(tmp_path / "a", tremor_dir, **kw), world(tmp_path / "b", **kw)
+
+
+def transfer(a, b, press_a=True, press_b=True):
+    card = b.phone.get_identity()
+    if press_a:
+        a.gw.physical_press()
+    raw = a.phone.get_bundle(card)
+    if press_b:
+        b.gw.physical_press()
+    return raw, b.phone.put_bundle(raw)
+
+
+def hello(*ws):
+    for w in ws:
+        w.phone.connect()
+
+
+def test_a_sealed_file_moves_a_profile_and_the_knobs_between_devices(tmp_path, tremor_dir):
+    a, b = duo(tmp_path, tremor_dir)
+    hello(a, b)
     a.phone.set("assist.strength", 8)
     a.phone.set("tremor.level", 3)
-    raw = a.phone.get_bundle()
-    assert len(raw) < 400 and B.unpack(raw).strength == 8
-    b = world(tmp_path / "b")
-    b.phone.connect()
-    ok(b.phone.put_bundle(raw))
+    raw, r = transfer(a, b)
+    ok(r)
+    assert raw[:4] == b"DOBS" and len(raw) < 1000
     assert (b.gw.settings.strength, b.gw.settings.tremor) == (8, 3)
     assert profile_stats(b.gw.view) == profile_stats(a.gw.view)
     assert b.gw.status().fill == a.gw.status().fill
+    assert b.gw.state_tree()["trusted.count"] == 1
 
 
-def test_a_bad_bundle_changes_nothing(tmp_path, tremor_dir):
+def test_the_card_is_served_and_matches_the_id_everywhere(tmp_path, tremor_dir):
+    from dataopen.ctl.identity import Card
     w = world(tmp_path, tremor_dir)
+    j = w.phone.connect().json()
+    card = Card.from_json(w.phone.get_identity())
+    assert card.verify() and card.id == j["device"] == w.gw.state_tree()["device.id"] == w.gw.identity.id
+    assert w.gw.read_info()[2:6] == card.digest[:4]
+
+
+def test_exporting_for_another_device_needs_the_button_on_the_source(tmp_path, tremor_dir):
+    a, b = duo(tmp_path, tremor_dir)
+    hello(a, b)
+    card = b.phone.get_identity()
+    r = a.phone.try_bundle(card)
+    assert err(r) == P.E.PHYSICAL and r.json()["detail"] == f"export:{b.gw.identity.id}"
+    a.gw.physical_press()
+    assert a.phone.try_bundle(card).type == P.T_DATA
+    assert err(a.phone.try_bundle(card)) == P.E.PHYSICAL                       # one press, one use
+    assert a.phone.try_bundle("self").type == P.T_DATA                          # a copy only this device can open needs no button
+
+
+def test_a_forged_recipient_card_is_refused_before_anything_is_sealed(tmp_path, tremor_dir):
+    a, b = duo(tmp_path, tremor_dir)
+    hello(a, b)
+    card = b.phone.get_identity()
+    a.gw.physical_press()
+    for bad in (dict(card, label="x"), dict(card, id=a.gw.identity.id), {}, "card"):
+        assert err(a.phone.try_bundle(bad)) in (P.E.BAD_BUNDLE, P.E.BAD_MSG)
+    assert a.gw.physical_until > 0                                              # and the press was not spent on garbage
+
+
+def test_a_file_from_an_unknown_sender_needs_the_button_and_is_then_remembered(tmp_path, tremor_dir):
+    a, b = duo(tmp_path, tremor_dir)
+    hello(a, b)
+    raw, r = transfer(a, b, press_b=False)
+    assert err(r) == P.E.PHYSICAL and r.json()["detail"] == f"trust:{a.gw.identity.id}"
+    assert b.gw.view is None and b.gw.state_tree()["trusted.count"] == 0       # nothing was applied
+    b.gw.physical_press()
+    ok(b.phone.put_bundle(raw))
+    assert b.gw.view is not None and b.gw.state_tree()["trusted.count"] == 1
+    a.gw.physical_press()
+    raw2 = a.phone.get_bundle(b.phone.get_identity())
+    ok(b.phone.put_bundle(raw2))                                                # a known sender: no button
+    assert err(b.phone.put_bundle(raw)) == P.E.REPLAY                           # but an old file is not welcome twice
+    assert err(b.phone.put_bundle(raw2)) == P.E.REPLAY
+
+
+def test_a_refused_file_does_not_burn_the_press(tmp_path, tremor_dir):
+    a, b = duo(tmp_path, tremor_dir)
+    hello(a, b)
+    card = b.phone.get_identity()
+    a.gw.physical_press()
+    raw = a.phone.get_bundle(card)
+    b.gw.physical_press()
+    bad = bytearray(raw)
+    bad[200] ^= 1
+    assert err(b.phone.put_bundle(bytes(bad))) == P.E.BAD_SIGNATURE
+    assert b.gw.physical_until > 0
+    ok(b.phone.put_bundle(raw))
+
+
+def test_a_file_made_for_one_device_is_refused_by_every_other(tmp_path, tremor_dir):
+    a, b = duo(tmp_path, tremor_dir)
+    c = world(tmp_path / "c")
+    hello(a, b, c)
+    raw, r = transfer(a, b)
+    ok(r)
+    c.gw.physical_press()
+    assert err(c.phone.put_bundle(raw)) == P.E.WRONG_DEVICE
+    a.gw.physical_press()
+    assert err(a.phone.put_bundle(raw)) == P.E.WRONG_DEVICE                     # not even the device that made it
+    assert c.gw.view is None and a.gw.state_tree()["trusted.count"] == 0
+
+
+def test_a_copy_for_oneself_comes_back_without_the_button_and_is_a_trial(tmp_path, tremor_dir):
+    w = world(tmp_path, tremor_dir, trial_s=20)
     ph = w.phone
     ph.connect()
-    raw = ph.get_bundle()
-    before = (w.gw.settings, ProfileStore(w.dir / "profile").load().generation)
-    rng = random.Random(4)
-    for i in range(0, len(raw) * 8, 13):
-        bad = bytearray(raw)
-        bad[i // 8] ^= 1 << (i % 8)
-        assert err(ph.put_bundle(bytes(bad))) == P.E.BAD_BUNDLE
-    for n in (0, 1, 50, len(raw) - 1):
-        assert err(ph.put_bundle(raw[:n])) == P.E.BAD_BUNDLE
-    assert err(ph.put_bundle(bytes(rng.randrange(256) for _ in range(200)))) == P.E.BAD_BUNDLE
-    assert err(ph.put_bundle(bytes(5000))) == P.E.TOO_BIG
-    assert (w.gw.settings, ProfileStore(w.dir / "profile").load().generation) == before
+    ph.set("assist.strength", 8)
+    ph.set("assist.on", True)
+    ph.confirm(True)
+    copy = ph.get_bundle("self")
+    ph.set("assist.strength", 2)
+    assert w.gw.trial is None
+    ok(ph.put_bundle(copy))
+    assert w.gw.settings.strength == 8 and w.gw.trial is not None              # raising help again: a trial
+    ok(ph.confirm(False))
+    assert w.gw.settings.strength == 2
+    assert w.gw.state_tree()["trusted.count"] == 0                              # being oneself is not a 'trusted sender'
 
 
-def test_importing_with_help_on_is_a_trial_and_undo_brings_the_old_profile_back(tmp_path, tremor_dir):
-    other = tmp_path / "other"
-    seed_profile(other, "overshooter")
-    donor = World(other, start=False)
-    donor.phone.connect()
-    raw = donor.phone.get_bundle()
-    w = world(tmp_path / "w", tremor_dir, trial_s=20)
+def test_the_old_open_format_is_refused_unless_the_device_was_told_otherwise(tmp_path, tremor_dir):
+    plain = B.Bundle("old", "2026-01-01", 7, 7).pack()
+    w = world(tmp_path / "x", tremor_dir)
+    w.phone.connect()
+    assert err(w.phone.put_bundle(plain)) == P.E.PLAIN_REFUSED
+    assert (w.gw.settings.strength, w.gw.settings.tremor) == (5, 5)
+    legacy = world(tmp_path / "y", tremor_dir, allow_plain_import=True)
+    legacy.phone.connect()
+    ok(legacy.phone.put_bundle(plain))
+    assert legacy.gw.settings.strength == 7
+
+
+def test_damaged_or_foreign_files_change_nothing(tmp_path, tremor_dir):
+    a, b = duo(tmp_path, tremor_dir)
+    hello(a, b)
+    card = b.phone.get_identity()
+    a.gw.physical_press()
+    raw = a.phone.get_bundle(card)
+    b.gw.physical_press()
+    before = (b.gw.settings, b.gw.view, b.gw.trust["senders"].copy())
+    codes = set()
+    for i in range(0, len(raw) * 8, 37):
+        x = bytearray(raw)
+        x[i // 8] ^= 1 << (i % 8)
+        codes.add(err(b.phone.put_bundle(bytes(x))))
+    for n in (0, 4, 100, len(raw) - 1):
+        codes.add(err(b.phone.put_bundle(raw[:n])))
+    codes.add(err(b.phone.put_bundle(random.Random(1).randbytes(300))))
+    codes.add(err(b.phone.put_bundle(b"DOBS" + bytes(300))))
+    assert codes <= {P.E.BAD_BUNDLE, P.E.BAD_SIGNATURE}
+    assert (b.gw.settings, b.gw.view, b.gw.trust["senders"]) == before
+    assert err(b.phone.put_bundle(bytes(16200))) == P.E.TOO_BIG
+    ok(b.phone.put_bundle(raw))                                                 # the press survived all of that
+
+
+def test_a_stolen_paired_phone_can_not_take_the_profile_out_or_wipe_it(tmp_path, tremor_dir):
+    """The attacker holds a bonded phone but not the device. Without the button on the device it can do none of the dangerous things."""
+    a, b = duo(tmp_path, tremor_dir)
+    hello(a, b)
+    attacker = b.phone.get_identity()
+    assert err(a.phone.try_bundle(attacker)) == P.E.PHYSICAL                    # profile out under a stranger's key
+    assert err(a.phone.act("erase.profile", True)) == P.E.PHYSICAL              # wipe
+    assert err(a.phone.act("factory.reset", True)) == P.E.PHYSICAL
+    assert err(a.phone.act("pairing.forget", True)) == P.E.PHYSICAL
+    stranger = world(tmp_path / "s")
+    stranger.phone.connect()
+    stranger.gw.physical_press()
+    stranger.gw.identity.next_seq()
+    raw = stranger.phone.get_bundle(a.phone.get_identity())                     # a file from a stranger for this device ...
+    assert err(a.phone.put_bundle(raw)) == P.E.PHYSICAL                         # ... is not applied without the button
+    assert a.gw.view is not None and a.gw.identity.id == a.phone.get_identity()["id"]
+
+
+def test_everything_the_device_stores_is_encrypted(tmp_path, tremor_dir):
+    w = world(tmp_path, tremor_dir, trial_s=3600)
     ph = w.phone
     ph.connect()
     ph.set("assist.on", True)
     ph.confirm(True)
-    old = profile_stats(w.gw.view)
-    ok(ph.put_bundle(raw))
-    assert profile_stats(w.gw.view) != old and w.gw.trial is not None
-    ok(ph.confirm(False))
-    assert profile_stats(w.gw.view) == old and w.gw.settings.assist_wanted
+    ph.put_bundle(ph.get_bundle("self"))                                        # writes the previous profile too
+    probes = [w.gw.view._state.pack()[8:40], b"assist_wanted", b"strength", b"BIOP", b"senders"]
+    files = [p for p in w.dir.rglob("*") if p.is_file() and p.name != "keys.json"]
+    assert {p.name.split(".")[0] for p in files} >= {"profile", "settings"}
+    for p in files:
+        raw = p.read_bytes()
+        assert raw[:4] == b"DOVT", p.name
+        for pr in probes:
+            assert pr not in raw, (p.name, pr)
+    assert not [p for p in w.dir.rglob("*.tmp")]
 
 
-def test_restore_the_previous_profile(tmp_path, tremor_dir):
-    other = tmp_path / "other"
-    seed_profile(other, "overshooter")
-    donor = World(other, start=False)
-    donor.phone.connect()
-    raw = donor.phone.get_bundle()
-    w = world(tmp_path / "w", tremor_dir, trial_s=20)
+def test_a_device_that_predates_the_vault_seals_its_plain_files_at_start(tmp_path, tremor_dir):
+    d = tmp_path / "gw"
+    shutil.copytree(tremor_dir, d)                                              # what an older version left: a plain profile
+    assert any(p.read_bytes()[:4] == b"BIOP" for p in d.glob("profile.[ab]"))
+    (d / "profile.prev").write_bytes((d / "profile.a").read_bytes() if (d / "profile.a").exists() else (d / "profile.b").read_bytes())
+    w = World(d)
+    assert w.gw.view is not None and w.gw.view.generation >= 1                    # still readable
+    for p in d.glob("profile.*"):
+        assert p.read_bytes()[:4] == b"DOVT", p.name
+    assert all(p.read_bytes()[:4] == b"DOVT" for p in d.glob("settings.*"))
+
+
+def test_erasing_personal_data_really_erases(tmp_path, tremor_dir):
+    from dataopen.ctl.vault import Vault, VaultError
+    w = world(tmp_path, tremor_dir, trial_s=3600)
     ph = w.phone
     ph.connect()
-    old = profile_stats(w.gw.view)
-    assert err(ph.act("profile.restore", True)) == P.E.NO_PROFILE      # nothing before it yet
-    ok(ph.put_bundle(raw))
-    new = profile_stats(w.gw.view)
-    assert new != old
-    ok(ph.act("profile.restore", True))
-    assert profile_stats(w.gw.view) == old
-    ok(ph.act("profile.restore", True))
-    assert profile_stats(w.gw.view) == new                              # it swaps: restoring twice is 'redo'
+    ph.set("assist.on", True)
+    ph.confirm(True)
+    ph.set("assist.strength", 9)
+    ph.confirm(True)
+    ph.put_bundle(ph.get_bundle("self"))
+    ident = w.gw.identity.id
+    old_key = w.gw.identity.storage_key
+    old = {p.name: p.read_bytes() for p in w.dir.iterdir() if p.is_file()}
+    assert err(ph.act("erase.profile", True)) == P.E.PHYSICAL
+    w.gw.physical_press()
+    ok(ph.act("erase.profile", True))
+    w.run(500)
+    assert state(w) == S_PASSTHRU and w.reason() == "CMD_PASSTHRU"
+    assert w.gw.view is None and w.gw.settings.assist_wanted is False and w.gw.settings.strength == 5
+    assert ph.get_state()["assist.on"] is False and ph.get_state()["profile.fill"] == 0 and ph.get_state()["trusted.count"] == 0
+    assert w.gw.identity.id == ident and w.gw.identity.storage_key != old_key        # the same device, a new storage key
+    assert pstore(w).load() is None
+    for name, blob in old.items():                                              # the old ciphertext is gone, and unreadable even if kept
+        if blob[:4] == b"DOVT":
+            with pytest.raises(VaultError):
+                Vault(w.gw.identity.storage_key).open(name.rsplit(".", 1)[0] if name.count(".") else name, blob)
+    w.make_gateway()                                                            # and it stays erased across a restart
+    assert w.gw.view is None and w.gw.settings.assist_wanted is False
+    assert (w.gw.identity.id, len(w.gw.trust["senders"])) == (ident, 0)
 
 
-def test_bundle_import_is_refused_while_calibrating(tmp_path, learner):
-    w = world(tmp_path, learner=learner)
-    ph = w.phone
-    ph.connect()
-    ph.set("calib.running", True)
-    assert err(ph.put_bundle(B.Bundle().pack())) == P.E.BUSY
+def test_the_export_counter_survives_an_erase_so_receivers_keep_accepting(tmp_path, tremor_dir):
+    a, b = duo(tmp_path, tremor_dir)
+    hello(a, b)
+    raw, r = transfer(a, b)
+    ok(r)
+    a.gw.physical_press()
+    ok(a.phone.act("erase.profile", True))
+    a.gw.physical_press()
+    a.phone.set("assist.strength", 4)
+    raw2 = a.phone.get_bundle(b.phone.get_identity())
+    ok(b.phone.put_bundle(raw2))                                                # a later file from the same device is still newer
+
+
+def test_a_factory_reset_makes_a_new_device_and_kills_every_file_made_for_the_old_one(tmp_path, tremor_dir):
+    a, b = duo(tmp_path, tremor_dir)
+    hello(a, b)
+    old_id = a.gw.identity.id
+    b.gw.physical_press()
+    raw_for_a = b.phone.get_bundle(a.phone.get_identity())                      # b makes a file for a
+    a.gw.physical_press()
+    ok(a.phone.put_bundle(raw_for_a))
+    a.gw.physical_press()
+    ok(a.phone.act("factory.reset", True))
+    assert a.gw.identity.id != old_id and a.phone.get_identity()["id"] == a.gw.identity.id
+    assert a.gw.read_info()[2:6] != bytes.fromhex("00000000")
+    a.gw.physical_press()
+    assert err(a.phone.put_bundle(raw_for_a)) == P.E.WRONG_DEVICE
+    assert a.gw.view is None
+
+
+def test_a_manifest_from_a_trusted_sender_is_applied_validated_and_kept(tmp_path, tremor_dir):
+    from dataopen.ctl import seal as SL
+    a, b = duo(tmp_path, tremor_dir)
+    hello(a, b)
+    custom = M.default_manifest(9)
+    custom["title"]["en"] = "Clinic layout"
+    old_hash = b.gw.manifest.hash
+    from dataopen.ctl.identity import Card
+    bcard = Card.from_json(b.phone.get_identity())
+    b.gw.physical_press()
+    raw = SL.seal(a.gw.identity, bcard, a.gw.identity.next_seq(), manifest=custom, tuning=(5, 5))
+    mark = len(b.phone.inbox)
+    ok(b.phone.put_bundle(raw))
+    assert b.gw.manifest.rev == 9 and b.gw.manifest.hash != old_hash
+    assert any(m.type == P.T_EVENT and m.json().get("manifest") == b.gw.manifest.hash.hex() for m in b.phone.inbox[mark:])
+    assert b.phone.get_manifest()["title"]["en"] == "Clinic layout"
+    b.make_gateway()
+    b.phone.connect()
+    assert b.gw.manifest.rev == 9 and b.gw.custom_manifest
+    exported = b.phone.get_bundle("self")
+    assert SL.open_sealed(exported, b.gw.identity).manifest["title"]["en"] == "Clinic layout"
+    bad = dict(custom, pages=[])
+    raw2 = SL.seal(a.gw.identity, bcard, a.gw.identity.next_seq(), manifest=bad, tuning=(5, 5))
+    assert err(b.phone.put_bundle(raw2)) == P.E.BAD_BUNDLE
+    assert b.gw.manifest.rev == 9
+    b.gw.physical_press()
+    ok(b.phone.act("erase.profile", True))
+    assert b.gw.manifest.rev == 1 and not b.gw.custom_manifest                   # erasing brings the built-in layout back
+
+
+def test_the_sealed_file_survives_restarts_of_both_devices(tmp_path, tremor_dir):
+    a, b = duo(tmp_path, tremor_dir)
+    hello(a, b)
+    raw, r = transfer(a, b)
+    ok(r)
+    a.make_gateway()
+    b.make_gateway()
+    hello(a, b)
+    assert b.gw.state_tree()["trusted.count"] == 1 and b.gw.identity.id == b.phone.get_identity()["id"]
+    a.gw.physical_press()
+    raw2 = a.phone.get_bundle(b.phone.get_identity())
+    ok(b.phone.put_bundle(raw2))                                                # a trusted sender stays trusted, its counter kept
+    assert err(b.phone.put_bundle(raw)) == P.E.REPLAY
 
 
 def test_a_newer_profile_on_disk_is_never_overwritten(tmp_path):
@@ -712,7 +951,7 @@ def test_a_newer_profile_on_disk_is_never_overwritten(tmp_path):
     w = World(d, start=False)
     assert w.gw.view is None and w.gw.profile_error
     w.phone.connect()
-    assert (d / "profile.a").read_bytes() == bytes(raw)
+    assert w.gw.vault.read(d / "profile.a", "profile") == bytes(raw)              # sealed (like every file), but its content is untouched
 
 
 def test_settings_survive_damage_to_the_newest_slot(tmp_path, tremor_dir):

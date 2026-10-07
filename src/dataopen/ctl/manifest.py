@@ -16,7 +16,7 @@ from . import protocol as P
 SCHEMA = 1
 TYPES = ("status", "toggle", "stepper", "action", "meter", "note", "file", "group")
 CONFIRMS = ("none", "revert", "two-step")
-FILE_OPS = ("bundle_put", "bundle_get")
+FILE_OPS = ("bundle_put", "bundle_get", "bundle_for_card", "card_get")
 MAX_PAGES, MAX_CONTROLS, MAX_DEPTH = 8, 64, 3
 MAX_LABEL, MAX_HELP, MAX_STEPS = 80, 240, 20
 LANGS = ("ru", "en")
@@ -63,17 +63,48 @@ def default_manifest(rev: int = 1) -> dict:
                  "help": L("Пока идёт калибровка, помощь выключена: устройство изучает ваши обычные движения. "
                            "Работайте с мышью как всегда.",
                            "While calibrating, assistance is off: the device learns your usual movements. Use the mouse as always.")},
-                {"id": "import", "type": "file", "op": "bundle_put", "accept": ".dobundle", "max_bytes": 4096,
-                 "label": L("Загрузить файл настроек", "Load a settings file")},
-                {"id": "export", "type": "file", "op": "bundle_get", "accept": ".dobundle", "max_bytes": 4096,
-                 "label": L("Сохранить файл настроек", "Save a settings file")},
+                {"id": "import", "type": "file", "op": "bundle_put", "accept": ".dobundle", "max_bytes": 16000,
+                 "label": L("Загрузить файл настроек", "Load a settings file"),
+                 "help": L("Откроется только файл, сделанный для этого устройства.", "Only a file made for this device will open.")},
+                {"id": "export", "type": "file", "op": "bundle_get", "accept": ".dobundle", "max_bytes": 16000,
+                 "label": L("Сохранить копию для этого устройства", "Save a copy for this device"),
+                 "help": L("Файл зашифрован и откроется только на этом устройстве.",
+                           "The file is encrypted and opens only on this device.")},
+                {"id": "export_other", "type": "file", "op": "bundle_for_card", "accept": ".docard", "max_bytes": 4096,
+                 "label": L("Сохранить для другого устройства", "Save for another device"),
+                 "help": L("Выберите карточку устройства-получателя и сверьте его номер с наклейкой. "
+                           "Потребуется нажать кнопку на этом устройстве.",
+                           "Choose the other device's card and check its number against its label. "
+                           "You will need to press the button on this device.")},
                 {"id": "restore", "type": "action", "key": "profile.restore", "confirm": "two-step",
                  "label": L("Вернуть прежний профиль", "Restore the previous profile")},
             ]},
             {"id": "more", "title": L("Ещё", "More"), "controls": [
+                {"id": "device_id", "type": "status", "key": "device.id", "label": L("Номер устройства", "Device number")},
+                {"id": "trusted", "type": "status", "key": "trusted.count",
+                 "label": L("Откуда принимаются файлы (кроме своих копий)",
+                            "Where files are accepted from (besides your own copies)")},
+                {"id": "card", "type": "file", "op": "card_get", "accept": ".docard", "max_bytes": 4096,
+                 "label": L("Сохранить карточку устройства", "Save the device card"),
+                 "help": L("Карточку можно передавать: по ней нельзя прочитать ничего личного, "
+                           "можно только подготовить файл для этого устройства.",
+                           "The card is safe to share: it reveals nothing personal, "
+                           "it only lets a file be prepared for this device.")},
                 {"id": "forget", "type": "action", "key": "pairing.forget", "confirm": "two-step", "danger": True,
                  "label": L("Забыть все телефоны", "Forget all phones"),
                  "help": L("Потребуется нажать кнопку на самом устройстве.", "You will need to press the button on the device itself.")},
+                {"id": "erase", "type": "action", "key": "erase.profile", "confirm": "two-step", "danger": True,
+                 "label": L("Стереть личные данные", "Erase personal data"),
+                 "help": L("Удаляет профиль, настройки и список доверенных. Помощь выключится. "
+                           "Потребуется нажать кнопку на устройстве.",
+                           "Deletes the profile, the settings and the trusted list. Assistance turns off. "
+                           "You will need to press the button on the device.")},
+                {"id": "factory", "type": "action", "key": "factory.reset", "confirm": "two-step", "danger": True,
+                 "label": L("Заводской сброс", "Factory reset"),
+                 "help": L("То же, и устройство получит новый номер: все файлы, сделанные для него, перестанут открываться. "
+                           "Нужна кнопка на устройстве.",
+                           "The same, and the device gets a new number: every file made for it stops opening. "
+                           "You will need the button on the device.")},
             ]},
         ],
     }

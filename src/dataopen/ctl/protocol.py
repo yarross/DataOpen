@@ -51,11 +51,11 @@ NO_SESSION_OK = (T_STOP, T_HARD_BYPASS, T_PING, T_HELLO)
 
 # error codes carried by T_ERR; every code has an i18n key `err.<name>` in the client
 ERRORS = dict(BAD_MSG=1, BAD_KEY=2, BAD_VALUE=3, BUSY=4, NOT_ALLOWED=5, BAD_BUNDLE=6, NO_PROFILE=7, TOO_BIG=8, NO_SESSION=9, UNSUPPORTED=10,
-              PHYSICAL=11, BAD_VERSION=12)
+              PHYSICAL=11, BAD_VERSION=12, WRONG_DEVICE=13, BAD_SIGNATURE=14, REPLAY=15, PLAIN_REFUSED=16)
 E = type("E", (), ERRORS)
 
 # the `get` targets
-GET_MANIFEST, GET_STATE, GET_BUNDLE = "manifest", "state", "bundle"
+GET_MANIFEST, GET_STATE, GET_BUNDLE, GET_IDENTITY = "manifest", "state", "bundle", "identity"
 
 # status flags (u16)
 SF_LATCH_SOFT, SF_LATCH_HW, SF_ASSIST_WANTED, SF_CALIBRATING = 1, 2, 4, 8

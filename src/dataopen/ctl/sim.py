@@ -143,10 +143,19 @@ class SimPhone:
     def hard_bypass(self) -> P.Message:
         return self.call(P.T_HARD_BYPASS, body=b"")
 
-    def get_bundle(self) -> bytes:
-        r = self.call(P.T_GET, {"what": "bundle"})
-        assert r.type == P.T_DATA
+    def try_bundle(self, target="self") -> P.Message:
+        """`target`: 'self' or another device's card (a dict). The reply is DATA (the sealed file) or ERR."""
+        return self.call(P.T_GET, {"what": "bundle", "for": target})
+
+    def get_bundle(self, target="self") -> bytes:
+        r = self.try_bundle(target)
+        assert r.type == P.T_DATA, r.body
         return r.body
+
+    def get_identity(self) -> dict:
+        r = self.call(P.T_GET, {"what": "identity"})
+        assert r.type == P.T_DATA
+        return r.json()
 
     def put_bundle(self, raw: bytes) -> P.Message:
         return self.call(P.T_BUNDLE_PUT, body=raw)

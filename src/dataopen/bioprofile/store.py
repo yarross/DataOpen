@@ -19,15 +19,19 @@ from .profile import SIZE, ProfileError, ProfileState, ProfileVersionError, Prof
 
 
 class ProfileStore:
-    def __init__(self, path: str | Path) -> None:
+    """`codec` (optional; any object with `read(path, name)` and `seal(name, data)`, e.g. `dataopen.ctl.vault.Vault`) encrypts the slot
+    files at rest; without it nothing changes. A plain slot is still read when a codec is set, so an old store migrates on its next save."""
+
+    def __init__(self, path: str | Path, codec=None) -> None:
+        self.codec = codec
         self.base = Path(path)
         self.base.parent.mkdir(parents=True, exist_ok=True)
         self.slots = [self.base.with_name(self.base.name + ".a"), self.base.with_name(self.base.name + ".b")]
 
     def _read(self, p: Path) -> Optional[ProfileState]:
         try:
-            data = p.read_bytes()
-        except OSError:
+            data = self.codec.read(p, self.base.name) if self.codec else p.read_bytes()
+        except (OSError, ValueError):                  # missing, or sealed under another key / damaged: the same as a bad slot
             return None
         try:
             validate(data)
@@ -57,6 +61,8 @@ class ProfileStore:
         target = self.slots[0 if gens[0] <= gens[1] else 1]
         tmp = target.with_name(target.name + ".tmp")
         data = state.pack()
+        if self.codec:
+            data = self.codec.seal(self.base.name, data)
         with open(tmp, "wb") as f:
             f.write(data)
             f.flush()

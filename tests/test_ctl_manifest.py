@@ -36,15 +36,24 @@ def test_default_manifest_is_valid_small_and_fully_translated():
 
 def test_every_control_in_the_default_manifest_is_known_to_the_gateway_and_vice_versa():
     mm = M.Manifest()
-    handled = {"assist.on", "assist.strength", "tremor.level", "calib.running", "profile.restore", "pairing.forget"}
+    handled = {"assist.on", "assist.strength", "tremor.level", "calib.running", "profile.restore", "pairing.forget",
+               "erase.profile", "factory.reset"}
     shown = {k for k, c in mm.by_key.items() if c["type"] in ("toggle", "stepper", "action")}
     assert shown == handled
 
 
 def test_the_safety_shell_is_not_in_the_manifest():
-    text = M.manifest_bytes(M.default_manifest()).decode()
-    for word in ("stop", "bypass", "passthru", "panic"):
-        assert word not in text.lower().replace("bypass_", "")      # the shell is fixed in the client and fed by `status`
+    """The names of the controls, not their free text: no control id or key stands for stopping or bypassing."""
+    names = []
+
+    def walk(cs):
+        for c in cs:
+            names.extend(str(c.get(k, "")) for k in ("id", "key", "op"))
+            walk(c.get("controls") or [])
+    for p in M.default_manifest()["pages"]:
+        walk(p["controls"])
+    for word in ("stop", "bypass", "passthru", "panic", "hard"):
+        assert not any(word in n.lower() for n in names), word      # the shell is fixed in the client and fed by `status`
 
 
 BAD = [

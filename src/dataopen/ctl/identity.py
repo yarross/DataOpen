@@ -180,6 +180,8 @@ class Identity:
         self.storage_key = base64.b64decode(d["storage"])
         self.created = d.get("created", "")
         self.export_seq = int(d.get("seq", 0))
+        ep = d.get("epochs")
+        self.slot_epochs = [int(x) for x in ep] if isinstance(ep, list) and all(isinstance(x, int) and x >= 0 for x in ep) else []
         self.digest = digest_of(self.ed_pub, self.x_pub)
         self.id = format_id(self.digest)
         self.fp8 = self.digest[:8]
@@ -201,7 +203,8 @@ class Identity:
         ser, _, _ = _lib()
         raw = ser.Encoding.Raw, ser.PrivateFormat.Raw, ser.NoEncryption()
         return {"ed": _b64(self._ed.private_bytes(*raw)), "x": _b64(self._x.private_bytes(*raw)),
-                "storage": _b64(self.storage_key), "created": self.created, "seq": self.export_seq}
+                "storage": _b64(self.storage_key), "created": self.created, "seq": self.export_seq,
+                "epochs": self.slot_epochs}
 
     def next_seq(self) -> int:
         """The counter every sealed file this device makes carries (receivers refuse a number they have already seen from it)."""
@@ -209,9 +212,28 @@ class Identity:
         self.store.save(self._dump())
         return self.export_seq
 
+    def slot_epoch(self, k: int) -> int:
+        return self.slot_epochs[k] if k < len(self.slot_epochs) else 0
+
+    def slot_key(self, k: int) -> bytes:
+        """The key one hardware slot's files are encrypted with: HKDF(storage key, slot number, slot epoch). Another slot's key (or the same
+        slot's key after `bump_slot_epoch`) opens nothing of it."""
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+        info = b"DataOpen slot key" + bytes([k]) + self.slot_epoch(k).to_bytes(4, "big")
+        return HKDF(algorithm=hashes.SHA256(), length=32, salt=b"DOSLOT1", info=info).derive(self.storage_key)
+
+    def bump_slot_epoch(self, k: int) -> None:
+        """Crypto-erase ONE slot: its files can never be read again, the other slots are untouched."""
+        n = max(len(self.slot_epochs), k + 1)
+        self.slot_epochs = (self.slot_epochs + [0] * n)[:n]
+        self.slot_epochs[k] += 1
+        self.store.save(self._dump())
+
     def rotate_storage_key(self) -> bytes:
         """Crypto-erase: files written under the old key can never be read again."""
         self.storage_key = os.urandom(32)
+        self.slot_epochs = []
         self.store.save(self._dump())
         return self.storage_key
 

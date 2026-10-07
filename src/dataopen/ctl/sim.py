@@ -9,6 +9,7 @@ What this is NOT: BLE (no radio, no MTU negotiation, no bonding), a real phone, 
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import random
 from pathlib import Path
@@ -160,6 +161,31 @@ class SimPhone:
     def put_bundle(self, raw: bytes) -> P.Message:
         return self.call(P.T_BUNDLE_PUT, body=raw)
 
+    def select_slot(self, k: int) -> P.Message:
+        return self.set("slot.active", k)
+
+    def get_slots(self) -> dict:
+        r = self.call(P.T_GET, {"what": "slots"})
+        assert r.type == P.T_DATA, r.body
+        return r.json()
+
+    def get_firmware(self) -> dict:
+        r = self.call(P.T_GET, {"what": "firmware"})
+        assert r.type == P.T_DATA, r.body
+        return r.json()
+
+    def fw_send(self, raw: bytes, piece: int = 4096) -> P.Message:
+        """The whole upload the way the client does it: FW_BEGIN, pieces in order, FW_END. Returns the reply to the first refusal, else
+        the reply to FW_END."""
+        r = self.call(P.T_FW_BEGIN, {"size": len(raw), "sha256": hashlib.sha256(raw).hexdigest(), "name": "update"})
+        if r.type != P.T_ACK:
+            return r
+        for off in range(0, len(raw), piece):
+            r = self.call(P.T_FW_CHUNK, body=off.to_bytes(4, "little") + raw[off : off + piece])
+            if r.type != P.T_ACK:
+                return r
+        return self.call(P.T_FW_END, body=b"")
+
     def disconnect(self) -> None:
         self.gw.on_disconnect()
 
@@ -180,6 +206,10 @@ class World:
                             spi_period_us=spi_period_us, **gw_kw)
         self.gw: Gateway
         self.phone: SimPhone
+        self.reboot_pending = False
+        self.reboots: list[str] = []
+        # called with the new gateway whenever one is swapped in (the dev server re-binds its sockets)
+        self.restart_hooks: list = []
         self.rig.module = _Ticker(self)  # type: ignore[assignment]
         self.make_gateway()
         if start:
@@ -187,9 +217,27 @@ class World:
 
     def make_gateway(self) -> None:
         """(Re)start the compute-module side: the same directory, so the persisted settings and the profile come back."""
-        self.gw = Gateway(self.dir, spi=self._spi, notify=lambda b: None, clock_us=lambda: self.rig.t, **self.gw_args)
+        self.gw = Gateway(self.dir, spi=self._spi, notify=lambda b: None, clock_us=lambda: self.rig.t, on_reboot=self._on_reboot,
+                          **self.gw_args)
         self.phone = SimPhone(self.gw, chunk=self.chunk, clock=lambda: self.rig.t)
         self.pre = BP.pack_frame(BP.Frame(BP.LK_NOP))
+        for hook in self.restart_hooks:
+            hook(self.gw)
+
+    def _on_reboot(self, why: str) -> None:
+        """The gateway asked for a restart (an update was applied, or taken back). It happens at the next tick, after the answer."""
+        self.reboot_pending = True
+        self.reboots.append(why)
+
+    def power_cycle(self) -> None:
+        """Pull the plug and put it back: the bridge keeps running (it has its own power path in the design), the gateway starts over."""
+        self.make_gateway()
+
+    # the front panel
+    def press(self, button: str, ms: float = 100.0) -> None:
+        self.gw.button(button, True, self.t)
+        self.run(ms)
+        self.gw.button(button, False, self.t)
 
     def _spi(self, frame: bytes) -> bytes:
         """One full-duplex SPI transaction: the bridge's preloaded frame comes back, the bridge consumes ours."""
@@ -224,6 +272,9 @@ class _Ticker:
         self.w = w
 
     def tick(self, t: int) -> None:
+        if self.w.reboot_pending:
+            self.w.reboot_pending = False
+            self.w.make_gateway()
         if getattr(self.w, "gw", None) is not None and not getattr(self.w, "gw_dead", False):
             self.w.gw.tick(t)
 

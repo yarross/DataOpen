@@ -623,7 +623,7 @@ def profile_stats(view: ProfileView):
 
 
 def pstore(w) -> ProfileStore:
-    return ProfileStore(w.dir / "profile", codec=w.gw.vault)
+    return w.gw.profile_store
 
 
 def duo(tmp_path, tremor_dir, **kw):
@@ -951,7 +951,8 @@ def test_a_newer_profile_on_disk_is_never_overwritten(tmp_path):
     w = World(d, start=False)
     assert w.gw.view is None and w.gw.profile_error
     w.phone.connect()
-    assert w.gw.vault.read(d / "profile.a", "profile") == bytes(raw)              # sealed (like every file), but its content is untouched
+    sl = w.gw.slot                                                                  # a pre-slot device: its profile became slot 0
+    assert sl.vault.read(sl.dir / "profile.a", "profile") == bytes(raw)             # sealed (like every file), but its content is untouched
 
 
 def test_settings_survive_damage_to_the_newest_slot(tmp_path, tremor_dir):

@@ -40,22 +40,27 @@ T_HELLO, T_HELLO_R = 0x01, 0x02
 T_GET, T_DATA = 0x10, 0x11
 T_SET, T_ACT, T_CONFIRM, T_BUNDLE_PUT = 0x20, 0x21, 0x22, 0x23
 T_STOP, T_HARD_BYPASS = 0x24, 0x25
+T_FW_BEGIN, T_FW_CHUNK, T_FW_END = 0x26, 0x27, 0x28
 T_ACK, T_ERR = 0x30, 0x31
 T_EVENT = 0x40
 T_PING, T_PONG = 0x7E, 0x7F
 TYPES = {k: v for k, v in dict(HELLO=T_HELLO, HELLO_R=T_HELLO_R, GET=T_GET, DATA=T_DATA, SET=T_SET, ACT=T_ACT, CONFIRM=T_CONFIRM,
-                               BUNDLE_PUT=T_BUNDLE_PUT, STOP=T_STOP, HARD_BYPASS=T_HARD_BYPASS, ACK=T_ACK, ERR=T_ERR, EVENT=T_EVENT,
-                               PING=T_PING, PONG=T_PONG).items()}
+                               BUNDLE_PUT=T_BUNDLE_PUT, STOP=T_STOP, HARD_BYPASS=T_HARD_BYPASS, FW_BEGIN=T_FW_BEGIN, FW_CHUNK=T_FW_CHUNK,
+                               FW_END=T_FW_END, ACK=T_ACK, ERR=T_ERR, EVENT=T_EVENT, PING=T_PING, PONG=T_PONG).items()}
 # what may be sent before HELLO: the safety actions must never wait for anything
 NO_SESSION_OK = (T_STOP, T_HARD_BYPASS, T_PING, T_HELLO)
 
 # error codes carried by T_ERR; every code has an i18n key `err.<name>` in the client
 ERRORS = dict(BAD_MSG=1, BAD_KEY=2, BAD_VALUE=3, BUSY=4, NOT_ALLOWED=5, BAD_BUNDLE=6, NO_PROFILE=7, TOO_BIG=8, NO_SESSION=9, UNSUPPORTED=10,
-              PHYSICAL=11, BAD_VERSION=12, WRONG_DEVICE=13, BAD_SIGNATURE=14, REPLAY=15, PLAIN_REFUSED=16)
+              PHYSICAL=11, BAD_VERSION=12, WRONG_DEVICE=13, BAD_SIGNATURE=14, REPLAY=15, PLAIN_REFUSED=16, FW_REJECTED=17)
 E = type("E", (), ERRORS)
 
 # the `get` targets
-GET_MANIFEST, GET_STATE, GET_BUNDLE, GET_IDENTITY = "manifest", "state", "bundle", "identity"
+GET_MANIFEST, GET_STATE, GET_BUNDLE, GET_IDENTITY, GET_SLOTS, GET_FIRMWARE = "manifest", "state", "bundle", "identity", "slots", "firmware"
+# hardware slots (docs/SLOTS.md); the status carries the active one and a bit per slot that holds a profile
+SLOT_COUNT = 4
+# data bytes per FW_CHUNK message (the message body limit is 16 KB; BLE cuts it into small writes anyway)
+FW_CHUNK_MAX = 8192
 
 # status flags (u16)
 SF_LATCH_SOFT, SF_LATCH_HW, SF_ASSIST_WANTED, SF_CALIBRATING = 1, 2, 4, 8
@@ -70,7 +75,7 @@ MODES = {0: "HW_BYPASS", 1: "PROBE", 2: "PASSTHRU", 3: "ASSIST"}   # the bridge'
 MODE_UNKNOWN = 255
 LEVEL_UNKNOWN = 255
 
-STATUS_FMT = "<BBBBHBBHHIHBB"
+STATUS_FMT = "<BBBBHBBHHHHBBBB"
 STATUS_SIZE = struct.calcsize(STATUS_FMT)
 INFO_FMT = "<BB4s4sHHH"
 INFO_SIZE = struct.calcsize(INFO_FMT)
@@ -192,22 +197,25 @@ class StatusSnapshot:
     ready: int = 0                     # RB_* bits
     state_rev: int = 0
     manifest_rev: int = 0
-    uptime_s: int = 0
+    uptime_min: int = 0                # minutes since the gateway started (u16: 45 days; a status is a glance, not a log)
     trial_left_s: int = 0
     strength: int = LEVEL_UNKNOWN
     tremor: int = LEVEL_UNKNOWN
+    slot: int = 0                      # the active hardware slot, 0..SLOT_COUNT-1
+    slot_mask: int = 0                 # bit k set: slot k holds a profile
 
     def pack(self) -> bytes:
         return struct.pack(STATUS_FMT, VER, self.bridge & 0xFF, self.mode & 0xFF, self.reason & 0xFF, self.flags & 0xFFFF, self.fill & 0xFF,
-                           self.ready & 0xFF, self.state_rev & 0xFFFF, self.manifest_rev & 0xFFFF, self.uptime_s & 0xFFFFFFFF,
-                           min(self.trial_left_s, 0xFFFF), self.strength & 0xFF, self.tremor & 0xFF)
+                           self.ready & 0xFF, self.state_rev & 0xFFFF, self.manifest_rev & 0xFFFF, min(self.uptime_min, 0xFFFF),
+                           min(self.trial_left_s, 0xFFFF), self.strength & 0xFF, self.tremor & 0xFF, self.slot & 0xFF,
+                           self.slot_mask & 0xFF)
 
     @staticmethod
     def unpack(b: bytes) -> Optional["StatusSnapshot"]:
         if len(b) != STATUS_SIZE or b[0] != VER:
             return None
-        _, br, mode, reason, flags, fill, ready, rev, mrev, up, trial, st, tr = struct.unpack(STATUS_FMT, b)
-        return StatusSnapshot(br, mode, reason, flags, fill, ready, rev, mrev, up, trial, st, tr)
+        _, br, mode, reason, flags, fill, ready, rev, mrev, up, trial, st, tr, slot, mask = struct.unpack(STATUS_FMT, b)
+        return StatusSnapshot(br, mode, reason, flags, fill, ready, rev, mrev, up, trial, st, tr, slot, mask)
 
     @property
     def reason_name(self) -> str:
@@ -248,6 +256,8 @@ def constants_js() -> str:
         f"export const CHUNK_MAX = {CHUNK_MAX};",
         f"export const CHUNK_DEFAULT = {CHUNK_DEFAULT};",
         f"export const REASM_TIMEOUT_MS = {REASM_TIMEOUT_US // 1000};",
+        f"export const SLOT_COUNT = {SLOT_COUNT};",
+        f"export const FW_CHUNK_MAX = {FW_CHUNK_MAX};",
         f"export const STATUS_SIZE = {STATUS_SIZE};",
         f"export const INFO_SIZE = {INFO_SIZE};",
         f"export const MODE_UNKNOWN = {MODE_UNKNOWN};",
@@ -274,6 +284,8 @@ def golden() -> dict:
         ("set", pack_json(T_SET, 7, {"key": "assist.strength", "value": 7})),
         ("stop", pack_message(T_STOP, 2)),
         ("hard_bypass", pack_message(T_HARD_BYPASS, 3)),
+        ("slot", pack_json(T_SET, 8, {"key": "slot.active", "value": 2})),
+        ("fw_chunk", pack_message(T_FW_CHUNK, 10, struct.pack("<I", 4096) + bytes(range(64)))),
         ("utf8", pack_json(T_EVENT, 0, {"msg": "Помощь выключена"})),
         ("big", pack_message(T_DATA, 9, body_big)),
     ]
@@ -288,9 +300,9 @@ def golden() -> dict:
             entry["chunks"][str(size)] = [c.hex() for c in ch]
         out["messages"].append(entry)
     flags = SF_ASSIST_WANTED | SF_LINK_OK | SF_HEALTHY
-    samples = (StatusSnapshot(), StatusSnapshot(1, 3, 0, flags, 70, RB_ASC | RB_TREMOR, 513, 4, 86400, 12, 6, 4),
-               StatusSnapshot(1, 2, 8, SF_LATCH_SOFT | SF_PC_ATTACHED, 100, RB_ASC | RB_TREMOR_NOT_NEEDED, 65535, 65535, 0xFFFFFFFF,
-                              20, 0, 10))
+    samples = (StatusSnapshot(), StatusSnapshot(1, 3, 0, flags, 70, RB_ASC | RB_TREMOR, 513, 4, 1440, 12, 6, 4, 2, 0b0111),
+               StatusSnapshot(1, 2, 8, SF_LATCH_SOFT | SF_PC_ATTACHED, 100, RB_ASC | RB_TREMOR_NOT_NEEDED, 65535, 65535, 0xFFFF,
+                              20, 0, 10, 3, 0b1000))
     for s in samples:
         out["status"].append({"hex": s.pack().hex(), **{k: getattr(s, k) for k in s.__dataclass_fields__}})
     out["info"].append({"hex": Info(3, b"\x01\x02\x03\x04", b"\xde\xad\xbe\xef", 4, 100).pack().hex(), "caps": 3, "device_id": "01020304",

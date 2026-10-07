@@ -1,6 +1,6 @@
 """The device manifest: which controls the phone shows, and what values the device will accept for them (docs/PWA.md section 4).
 
-The client is deliberately dumb: it renders eight control types and knows no screen by name. The same object that is sent to the phone is
+The client is deliberately dumb: it renders nine control types and knows no screen by name. The same object that is sent to the phone is
 the one the gateway checks every SET / ACT against, so the device stays the only authority on what a value may be. The safety shell
 (status, 'turn assistance off', 'hardware bypass') is NOT part of the manifest.
 """
@@ -14,9 +14,12 @@ from typing import Any, Optional
 from . import protocol as P
 
 SCHEMA = 1
-TYPES = ("status", "toggle", "stepper", "action", "meter", "note", "file", "group")
+TYPES = ("status", "toggle", "stepper", "action", "meter", "note", "file", "group", "text")
 CONFIRMS = ("none", "revert", "two-step")
-FILE_OPS = ("bundle_put", "bundle_get", "bundle_for_card", "card_get")
+FILE_OPS = ("bundle_put", "bundle_get", "bundle_for_card", "card_get", "fw_put")
+SCOPES = ("active", "all")           # which slots a file control saves: the active one, or every one that holds anything
+MAX_TEXT = 40
+FW_MAX_BYTES = 64 * 1024 * 1024
 MAX_PAGES, MAX_CONTROLS, MAX_DEPTH = 8, 64, 3
 MAX_LABEL, MAX_HELP, MAX_STEPS = 80, 240, 20
 LANGS = ("ru", "en")
@@ -67,9 +70,13 @@ def default_manifest(rev: int = 1) -> dict:
                  "label": L("Загрузить файл настроек", "Load a settings file"),
                  "help": L("Откроется только файл, сделанный для этого устройства.", "Only a file made for this device will open.")},
                 {"id": "export", "type": "file", "op": "bundle_get", "accept": ".dobundle", "max_bytes": 16000,
-                 "label": L("Сохранить копию для этого устройства", "Save a copy for this device"),
+                 "label": L("Сохранить копию этого слота", "Save a copy of this slot"),
                  "help": L("Файл зашифрован и откроется только на этом устройстве.",
                            "The file is encrypted and opens only on this device.")},
+                {"id": "export_all", "type": "file", "op": "bundle_get", "scope": "all", "accept": ".dobundle", "max_bytes": 16000,
+                 "label": L("Сохранить копию всех слотов", "Save a copy of all slots"),
+                 "help": L("Все слоты в одном файле. Откроется только на этом устройстве.",
+                           "All the slots in one file. It opens only on this device.")},
                 {"id": "export_other", "type": "file", "op": "bundle_for_card", "accept": ".docard", "max_bytes": 4096,
                  "label": L("Сохранить для другого устройства", "Save for another device"),
                  "help": L("Выберите карточку устройства-получателя и сверьте его номер с наклейкой. "
@@ -78,6 +85,16 @@ def default_manifest(rev: int = 1) -> dict:
                            "You will need to press the button on this device.")},
                 {"id": "restore", "type": "action", "key": "profile.restore", "confirm": "two-step",
                  "label": L("Вернуть прежний профиль", "Restore the previous profile")},
+                {"id": "slot_name", "type": "text", "key": "slot.name", "maxlen": 24,
+                 "label": L("Название слота", "Slot name"),
+                 "help": L("Например «Работа» или «Браузер». Название видно только на этом устройстве и в телефоне.",
+                           "For example \"Work\" or \"Browser\". Shown only on this device and in the phone.")},
+                {"id": "slot_clear", "type": "action", "key": "slot.clear", "confirm": "two-step", "danger": True,
+                 "label": L("Очистить этот слот", "Clear this slot"),
+                 "help": L("Стирает профиль, уровни и название только в этом слоте. Остальные слоты не затрагиваются. "
+                           "Помощь выключится. Потребуется нажать кнопку на устройстве.",
+                           "Erases the profile, levels and name of this slot only. The other slots are not touched. "
+                           "Assistance turns off. You will need to press the button on the device.")},
             ]},
             {"id": "more", "title": L("Ещё", "More"), "controls": [
                 {"id": "device_id", "type": "status", "key": "device.id", "label": L("Номер устройства", "Device number")},
@@ -90,21 +107,42 @@ def default_manifest(rev: int = 1) -> dict:
                            "можно только подготовить файл для этого устройства.",
                            "The card is safe to share: it reveals nothing personal, "
                            "it only lets a file be prepared for this device.")},
+                {"id": "fw_version", "type": "status", "key": "fw.version", "label": L("Версия прошивки", "Firmware version")},
+                {"id": "fw_state", "type": "status", "key": "fw.state",
+                 "map": {"unsupported": L("Обновление не поддерживается", "Updates are not supported"),
+                         "current": L("Установлена, обновлений нет", "Installed, nothing pending"),
+                         "staged": L("Обновление загружено и ждёт применения", "An update is loaded and waiting to be applied"),
+                         "trial": L("Новая версия проверяется", "The new version is being checked")},
+                 "label": L("Обновление", "Update")},
+                {"id": "fw_put", "type": "file", "op": "fw_put", "accept": ".dofw", "max_bytes": 4194304,
+                 "label": L("Загрузить обновление прошивки", "Load a firmware update"),
+                 "help": L("Файл должен быть подписан производителем. Он ложится во вторую область памяти, пока работает прежняя версия.",
+                           "The file must be signed by the manufacturer. It goes into the second memory bank "
+                           "while the current version keeps running.")},
+                {"id": "fw_apply", "type": "action", "key": "fw.apply", "confirm": "two-step",
+                 "label": L("Применить обновление", "Apply the update"),
+                 "help": L("Устройство перезапустится. Если новая версия не заработает как надо, прежняя вернётся сама. "
+                           "Потребуется нажать кнопку на устройстве.",
+                           "The device restarts. If the new version does not work properly, the previous one comes back by itself. "
+                           "You will need to press the button on the device.")},
+                {"id": "fw_rollback", "type": "action", "key": "fw.rollback", "confirm": "two-step",
+                 "label": L("Вернуть прежнюю версию", "Go back to the previous version"),
+                 "help": L("Потребуется нажать кнопку на устройстве.", "You will need to press the button on the device.")},
                 {"id": "forget", "type": "action", "key": "pairing.forget", "confirm": "two-step", "danger": True,
                  "label": L("Забыть все телефоны", "Forget all phones"),
                  "help": L("Потребуется нажать кнопку на самом устройстве.", "You will need to press the button on the device itself.")},
                 {"id": "erase", "type": "action", "key": "erase.profile", "confirm": "two-step", "danger": True,
-                 "label": L("Стереть личные данные", "Erase personal data"),
-                 "help": L("Удаляет профиль, настройки и список доверенных. Помощь выключится. "
-                           "Потребуется нажать кнопку на устройстве.",
-                           "Deletes the profile, the settings and the trusted list. Assistance turns off. "
-                           "You will need to press the button on the device.")},
+                 "label": L("Стереть личные данные (все слоты)", "Erase personal data (all slots)"),
+                 "help": L("Удаляет профили, настройки и список доверенных во всех слотах. Помощь выключится. "
+                           "Потребуется нажать кнопку на устройстве. То же делает удержание кнопки подтверждения 10 секунд.",
+                           "Deletes the profiles, the settings and the trusted list in every slot. Assistance turns off. "
+                           "You will need to press the button on the device. Holding the confirm button for 10 seconds does the same.")},
                 {"id": "factory", "type": "action", "key": "factory.reset", "confirm": "two-step", "danger": True,
                  "label": L("Заводской сброс", "Factory reset"),
                  "help": L("То же, и устройство получит новый номер: все файлы, сделанные для него, перестанут открываться. "
-                           "Нужна кнопка на устройстве.",
+                           "Нужна кнопка на устройстве. То же делает удержание кнопки подтверждения 20 секунд.",
                            "The same, and the device gets a new number: every file made for it stops opening. "
-                           "You will need the button on the device.")},
+                           "You will need the button on the device. Holding the confirm button for 20 seconds does the same.")},
             ]},
         ],
     }
@@ -175,7 +213,7 @@ def validate_manifest(m: Any) -> list[str]:
             return
         _text(c.get("label"), MAX_LABEL, f"{w}.label", errs, required=typ != "note")
         _text(c.get("help"), MAX_HELP, f"{w}.help", errs, required=False)
-        needs_key = typ in ("status", "toggle", "stepper", "action", "meter")
+        needs_key = typ in ("status", "toggle", "stepper", "action", "meter", "text")
         if needs_key and (not isinstance(key, str) or not _KEY.match(key)):
             errs.append(f"{w}: bad key {key!r}")
         if c.get("confirm", "none") not in CONFIRMS:
@@ -200,8 +238,14 @@ def validate_manifest(m: Any) -> list[str]:
         elif typ == "file":
             if c.get("op") not in FILE_OPS:
                 errs.append(f"{w}: op must be one of {FILE_OPS}")
-            if not isinstance(c.get("max_bytes"), int) or not 0 < c["max_bytes"] <= 65536:
-                errs.append(f"{w}: max_bytes must be 1..65536")
+            cap = FW_MAX_BYTES if c.get("op") == "fw_put" else 65536
+            if not isinstance(c.get("max_bytes"), int) or isinstance(c.get("max_bytes"), bool) or not 0 < c["max_bytes"] <= cap:
+                errs.append(f"{w}: max_bytes must be 1..{cap}")
+            if c.get("scope", "active") not in SCOPES:
+                errs.append(f"{w}: scope must be one of {SCOPES}")
+        elif typ == "text":
+            if not isinstance(c.get("maxlen"), int) or isinstance(c.get("maxlen"), bool) or not 1 <= c["maxlen"] <= MAX_TEXT:
+                errs.append(f"{w}: maxlen must be 1..{MAX_TEXT}")
         elif typ == "group":
             if depth >= MAX_DEPTH:
                 errs.append(f"{w}: nested deeper than {MAX_DEPTH}")
@@ -257,8 +301,11 @@ class Manifest:
 
     def check_set(self, key: Any, value: Any) -> Verdict:
         c = self.by_key.get(key) if isinstance(key, str) else None
-        if c is None or c["type"] not in ("toggle", "stepper"):
+        if c is None or c["type"] not in ("toggle", "stepper", "text"):
             return Verdict(False, P.E.BAD_KEY, "no such control")
+        if c["type"] == "text":
+            ok = isinstance(value, str) and len(value) <= c["maxlen"]
+            return Verdict(True) if ok else Verdict(False, P.E.BAD_VALUE, f"text of at most {c['maxlen']} characters was expected")
         if c["type"] == "toggle":
             return Verdict(True) if isinstance(value, bool) else Verdict(False, P.E.BAD_VALUE, "a boolean was expected")
         if isinstance(value, bool) or not isinstance(value, int) or not c["min"] <= value <= c["max"]:

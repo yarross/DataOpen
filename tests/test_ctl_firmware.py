@@ -172,3 +172,113 @@ def test_state_can_be_written_down_and_has_no_secrets(rig):
     d = m.to_dict()
     assert d["trial"] == "B" and d["slots"]["B"]["image"]["v"] == 2 and "payload" not in str(d)
     assert struct.calcsize(F.HEAD_FMT) == F.HEAD == 60
+
+
+# ------------------------------------------------------------------------------------------------ streaming, taking back, state on disk
+def test_an_upload_takes_pieces_in_order_and_survives_repeats(rig):
+    signer, _, _ = rig
+    raw = img(signer, 2)
+    up = F.Upload(len(raw), __import__("hashlib").sha256(raw).digest(), 1 << 20)
+    assert up.chunk(0, raw[:100]) == 100 and up.chunk(0, raw[:100]) == 100                # a repeat (lost acknowledgement): no harm
+    assert up.chunk(50, raw[50:100]) == 100                                                # inside what is already there
+    assert up.chunk(100, raw[100:300]) == 300
+    with pytest.raises(F.FirmwareError) as e:
+        up.chunk(400, raw[400:500])                                                         # a gap is refused, not filled
+    assert e.value.key == "sequence" and up.next == 300
+    with pytest.raises(F.FirmwareError) as e:
+        up.finish()
+    assert e.value.key == "sequence"
+    up.chunk(300, raw[300:])
+    assert up.finish() == raw
+
+
+def test_an_upload_checks_size_and_hash(rig):
+    signer, _, _ = rig
+    raw = img(signer, 2)
+    for size in (0, -1, 10**9, True, "5"):
+        with pytest.raises(F.FirmwareError):
+            F.Upload(size, None, 1 << 20)
+    up = F.Upload(10, None, 1 << 20)
+    with pytest.raises(F.FirmwareError) as e:
+        up.chunk(0, b"x" * 11)
+    assert e.value.key == "too_large"
+    up = F.Upload(len(raw), b"\x00" * 32, 1 << 20)
+    up.chunk(0, raw)
+    with pytest.raises(F.FirmwareError) as e:
+        up.finish()
+    assert e.value.key == "damaged"
+    with pytest.raises(F.FirmwareError):
+        F.Upload(10, b"short", 1 << 20)
+    # no announced hash: the signed one inside decides
+    up = F.Upload(len(raw), None, 1 << 20)
+    up.chunk(0, raw)
+    assert up.finish() == raw
+
+
+def test_the_person_can_take_the_previous_version_back_unless_the_floor_forbids(rig):
+    signer, _, m = rig
+    m.stage(img(signer, 2, minv=1))
+    m.reboot()
+    m.confirm()
+    m.check_switch_back()
+    assert m.switch_back() == "A" and m.version == 1 and m.running == "A" and m.trial is None
+    m.stage(img(signer, 3, minv=3))                                                         # this one raises the floor past version 1 and 2
+    m.reboot()
+    m.confirm()
+    assert m.floor == 3
+    with pytest.raises(F.FirmwareError) as e:
+        m.check_switch_back()
+    assert e.value.key == "rollback"
+    with pytest.raises(F.FirmwareError):
+        m.switch_back()
+    assert m.version == 3
+
+
+def test_there_is_nothing_to_take_back_to_when_the_other_bank_is_empty_or_bad(rig):
+    _, _, m = rig
+    with pytest.raises(F.FirmwareError) as e:
+        m.switch_back()
+    assert e.value.key == "no_previous"
+
+
+def test_taking_back_during_a_trial_drops_the_trial(rig):
+    signer, _, m = rig
+    m.stage(img(signer, 2))
+    m.reboot()
+    assert m.switch_back() == "A" and m.trial is None and m.slots["B"].bad and m.running == "A"
+    assert m.reboot() == "A"
+
+
+def test_an_update_that_needs_approval_is_not_booted_by_a_restart(rig):
+    signer, _, m = rig
+    m.require_approval = True
+    m.stage(img(signer, 2))
+    assert [m.reboot() for _ in range(10)] == ["A"] * 10 and m.boots == 0                    # a power cut does not apply it
+    m.approve()
+    assert m.reboot() == "B" and m.boots == 1
+    m.confirm()
+    assert not m.approved and m.version == 2
+    with pytest.raises(F.FirmwareError):
+        m.approve()                                                                          # nothing staged any more
+
+
+def test_the_banks_and_the_bookkeeping_survive_a_restart_and_a_changed_file_does_not(rig, tmp_path):
+    signer, pub, m = rig
+    m.require_approval = True
+    m.stage(img(signer, 2))
+    m.approve()
+    m.reboot()
+    m.save(tmp_path)
+    n = F.SlotManager.load(tmp_path, pub, HW)
+    assert (n.floor, n.active, n.trial, n.boots, n.approved) == (m.floor, "A", "B", 1, True)
+    assert [n.slots[k].image.version for k in "AB"] == [1, 2]
+    raw = bytearray((tmp_path / "bank-B.img").read_bytes())
+    raw[-1] ^= 1
+    (tmp_path / "bank-B.img").write_bytes(bytes(raw))
+    n = F.SlotManager.load(tmp_path, pub, HW)
+    # a bank that no longer verifies is empty, not trusted
+    assert n.slots["B"].image is None and n.trial is None
+    (tmp_path / "state.json").write_text("garbage")
+    # unreadable bookkeeping: start empty, never guess
+    assert F.SlotManager.load(tmp_path, pub, HW).slots["A"].image is None
+    assert F.SlotManager.load(tmp_path / "missing", pub, HW).slots["A"].image is None

@@ -294,3 +294,111 @@ def test_the_file_format_is_pinned_by_a_fixed_vector():
     o = S.open_sealed(bytes.fromhex(golden), b)
     assert (o.seq, o.tuning, o.meta["name"], o.profile.profile_id) == (9, (7, 3), "golden", 1234)
     assert (a.id, b.id) == ("TTD9-SX68-FH7N-88T2", "G3K2-QKCD-F94N-3A5S")           # the fixed keys give fixed IDs
+
+
+# ---------------------------------------------------------------------------------------------------------------- slots in a file
+def forge_file(a, b, inner):
+    """A properly sealed and signed file whose INSIDE is whatever the test builds (what a hostile but genuine sender could send)."""
+    from cryptography.hazmat.primitives import serialization as ser
+    from cryptography.hazmat.primitives.asymmetric import x25519
+    from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+    rng = DetRng("forge-slots")
+    nonce, bid, seed = rng(12), rng(16), rng(32)
+    eph = x25519.X25519PrivateKey.from_private_bytes(seed)
+    ep = eph.public_key().public_bytes(ser.Encoding.Raw, ser.PublicFormat.Raw)
+    key = S._key(eph.exchange(x25519.X25519PublicKey.from_public_bytes(b.x_pub)), ep, b.x_pub, a.digest, b.digest, bid)
+    h = struct.pack(S.HEAD_FMT, S.MAGIC, 2, 1, 0, bid, b.fp8, a.fp8, 1, a.ed_pub, a.x_pub, ep, nonce, len(inner) + 16)
+    ct = ChaCha20Poly1305(key).encrypt(nonce, inner, h)
+    return h + ct + a.sign(b"DOBS-v2-sig" + h + ct)
+
+
+def slot_body(entries):
+    """entries: [(number, [(section, bytes)])] -> the content of the slot section."""
+    body = bytes([len(entries)])
+    for n, secs in entries:
+        inner = S._tlv(secs, pad=1)
+        body += struct.pack("<BI", n, len(inner)) + inner
+    return body
+
+
+TUN = (S.S_TUNING, b'{"strength":5,"tremor":5}')
+
+
+def test_slots_round_trip_by_number_with_everything_a_slot_holds(pair, profile):
+    a, b, _ = pair
+    man = M.default_manifest(3)
+    slots = [S.SlotData(0, profile, (8, 2), None, "Работа"), S.SlotData(3, None, (1, 9), man, "")]
+    o = S.open_sealed(S.seal(a, b.card(), 4, slots=slots, meta={"name": "x"}), b)
+    assert [s.n for s in o.slots] == [0, 3] and o.profile is None and o.tuning is None and o.manifest is None
+    s0, s3 = o.slots
+    assert s0.profile.pack() == profile.pack() and s0.tuning == (8, 2) and s0.name == "Работа" and s0.manifest is None
+    assert s3.profile is None and s3.tuning == (1, 9) and s3.manifest == man and s3.name == ""
+
+
+def test_a_file_is_about_the_active_slot_or_about_named_slots_never_both(pair, profile):
+    a, b, _ = pair
+    with pytest.raises(S.SealError):
+        S.seal(a, b.card(), 1, profile=profile, slots=[S.SlotData(1, None, (5, 5))])
+    mixed = S._tlv([(S.S_TUNING, b'{"strength":5,"tremor":5}'), (S.S_SLOT, slot_body([(1, [TUN])]))])
+    with pytest.raises(S.SealError) as e:
+        S.open_sealed(forge_file(a, b, mixed), b)
+    assert e.value.key == "damaged"
+
+
+def test_slot_numbers_must_exist_and_be_unique(pair):
+    a, b, _ = pair
+    for n in (4, 9, 255):
+        with pytest.raises(S.SealError):
+            S.seal(a, b.card(), 1, slots=[S.SlotData(n, None, (5, 5))])
+        with pytest.raises(S.SealError) as e:
+            S.open_sealed(forge_file(a, b, S._tlv([(S.S_SLOT, slot_body([(n, [TUN])]))])), b)
+        assert e.value.key == "damaged"
+    with pytest.raises(S.SealError):
+        S.seal(a, b.card(), 1, slots=[S.SlotData(1, None, (5, 5)), S.SlotData(1, None, (6, 6))])
+    with pytest.raises(S.SealError) as e:
+        S.open_sealed(forge_file(a, b, S._tlv([(S.S_SLOT, slot_body([(1, [TUN]), (1, [TUN])]))])), b)
+    assert e.value.key == "damaged"
+
+
+def test_a_slot_holds_only_what_belongs_in_a_slot(pair):
+    a, b, _ = pair
+    nested = slot_body([(0, [(S.S_SLOT, slot_body([(1, [TUN])]))])])
+    for body, key in ((nested, "unsupported"), (slot_body([(0, [(S.S_MODEL, b"weights")])]), "unsupported"),
+                      (slot_body([(0, [(99, b"?")])]), "unsupported"), (slot_body([(0, [])]), "damaged"), (b"", "damaged"),
+                      (b"\x00", "damaged"), (slot_body([(0, [TUN])]) + b"x", "damaged"),
+                      (slot_body([(0, [TUN])])[:-3], "damaged"), (bytes([2]) + slot_body([(0, [TUN])])[1:], "damaged")):
+        with pytest.raises(S.SealError) as e:
+            S.open_sealed(forge_file(a, b, S._tlv([(S.S_SLOT, body)])), b)
+        assert e.value.key == key, body[:12]
+    twice = S._tlv([(S.S_SLOT, slot_body([(0, [TUN])]))] * 2)
+    with pytest.raises(S.SealError):
+        S.open_sealed(forge_file(a, b, twice), b)                          # the section itself can come only once: a slot only once
+
+
+def test_the_content_of_every_slot_is_checked_like_a_flat_file(pair, profile):
+    a, b, _ = pair
+    for bad in (b'{"strength":99,"tremor":1}', b'{"strength":true,"tremor":1}', b"not json", b'{"strength":1}'):
+        with pytest.raises(S.SealError):
+            S.open_sealed(forge_file(a, b, S._tlv([(S.S_SLOT, slot_body([(2, [(S.S_TUNING, bad)])]))])), b)
+    broken = bytearray(profile.pack())
+    broken[10] ^= 0xFF
+    with pytest.raises(S.SealError):
+        S.open_sealed(forge_file(a, b, S._tlv([(S.S_SLOT, slot_body([(2, [(S.S_PROFILE, bytes(broken))])]))])), b)
+
+
+def test_slots_do_not_change_what_a_flat_file_looks_like(pair, profile):
+    """A device that knows nothing of slots wrote exactly these bytes; the section is purely additive."""
+    a, b, _ = pair
+    assert S.encode_inner(profile, (5, 5)) == S._tlv([(S.S_PROFILE, profile.pack()), (S.S_TUNING, b'{"strength":5,"tremor":5}')])
+
+
+def test_the_slot_file_format_is_pinned_by_a_fixed_vector():
+    a, b = _golden_parties()
+    slots = [S.SlotData(0, _golden_state(), (7, 3), None, "Work"), S.SlotData(2, None, (4, 6), None, "Browser")]
+    raw = S.seal(a, b.card(), 10, slots=slots, meta={"name": "golden", "created": "2026-10-07"}, rng=DetRng("seal-slots"))
+    f = DATA / "dobs_v2_slots.hex"
+    assert f.exists(), f"write tests/data/dobs_v2_slots.hex with:\n{raw.hex()}"
+    assert raw.hex() == f.read_text().strip()
+    o = S.open_sealed(bytes.fromhex(f.read_text().strip()), b)
+    assert [(s.n, s.name, s.tuning) for s in o.slots] == [(0, "Work", (7, 3)), (2, "Browser", (4, 6))]
+    assert o.slots[0].profile.profile_id == 1234

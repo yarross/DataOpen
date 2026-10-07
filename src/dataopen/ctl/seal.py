@@ -16,12 +16,13 @@ from __future__ import annotations
 import json
 import os
 import struct
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from ..bioprofile.profile import ProfileError, ProfileState, ProfileVersionError, validate
 from .bundle import _clean
 from .identity import Card, Identity, _lib, digest_of, format_id
+from .slots import SLOT_COUNT, clean_name
 from . import tuning as T
 
 MAGIC, VERSION, SUITE = b"DOBS", 2, 1
@@ -32,8 +33,9 @@ TAG = 16
 MAX_FILE = 16000                       # a CtlLink body is 16 KB; the streaming that model weights need is a later step
 PAD = 256
 F_SELF = 1
-S_PROFILE, S_TUNING, S_MANIFEST, S_META, S_MODEL = 1, 2, 3, 4, 5
-KNOWN = (S_PROFILE, S_TUNING, S_MANIFEST, S_META)
+S_PROFILE, S_TUNING, S_MANIFEST, S_META, S_MODEL, S_SLOT = 1, 2, 3, 4, 5, 6
+KNOWN = (S_PROFILE, S_TUNING, S_MANIFEST, S_META, S_SLOT)
+FLAT = (S_PROFILE, S_TUNING, S_MANIFEST)
 assert HEAD == 160
 
 
@@ -46,12 +48,22 @@ class SealError(ValueError):
 
 
 # ---------------------------------------------------------------------------------------------------------------- inner sections
-def _tlv(sections: list[tuple[int, bytes]]) -> bytes:
+@dataclass
+class SlotData:
+    """What one hardware slot carries in a file (docs/SLOTS.md). A file without slot sections is about the receiver's ACTIVE slot."""
+    n: int
+    profile: Optional[ProfileState] = None
+    tuning: Optional[tuple[int, int]] = None
+    manifest: Optional[dict] = None
+    name: str = ""
+
+
+def _tlv(sections: list[tuple[int, bytes]], pad: int = PAD) -> bytes:
     out = bytes([len(sections)]) + b"".join(struct.pack("<BI", t, len(b)) + b for t, b in sections)
-    return out + b"\0" * (PAD * max(1, -(-len(out) // PAD)) - len(out))
+    return out + b"\0" * (pad * max(1, -(-len(out) // pad)) - len(out))
 
 
-def _untlv(inner: bytes) -> dict[int, bytes]:
+def _untlv(inner: bytes, pad: int = PAD) -> dict[int, bytes]:
     if not inner:
         raise SealError("damaged", "empty")
     n, pos, out = inner[0], 1, {}
@@ -66,13 +78,13 @@ def _untlv(inner: bytes) -> dict[int, bytes]:
             raise SealError("damaged", "duplicate section")
         out[t] = inner[pos : pos + ln]
         pos += ln
-    if any(inner[pos:]) or len(inner) % PAD:
+    if (pad == 1 and pos != len(inner)) or any(inner[pos:]) or len(inner) % pad:
         raise SealError("damaged", "padding")
     return out
 
 
-def encode_inner(profile: Optional[ProfileState] = None, tuning: Optional[tuple[int, int]] = None, manifest: Optional[dict] = None,
-                 meta: Optional[dict] = None) -> bytes:
+def _sections(profile: Optional[ProfileState], tuning: Optional[tuple[int, int]], manifest: Optional[dict],
+              meta: Optional[dict]) -> list[tuple[int, bytes]]:
     sections: list[tuple[int, bytes]] = []
     if profile is not None:
         sections.append((S_PROFILE, profile.pack()))
@@ -83,7 +95,82 @@ def encode_inner(profile: Optional[ProfileState] = None, tuning: Optional[tuple[
     if meta is not None:
         clean = {"name": _clean(meta.get("name", "")), "created": _clean(meta.get("created", ""), 10)}
         sections.append((S_META, json.dumps(clean, ensure_ascii=False, separators=(",", ":")).encode("utf-8")))
+    return sections
+
+
+def encode_inner(profile: Optional[ProfileState] = None, tuning: Optional[tuple[int, int]] = None, manifest: Optional[dict] = None,
+                 meta: Optional[dict] = None, slots: Optional[list[SlotData]] = None) -> bytes:
+    sections = _sections(profile, tuning, manifest, meta)
+    if slots:
+        if profile is not None or tuning is not None or manifest is not None:
+            raise SealError("damaged", "a file is either about the active slot or about named slots")
+        body = bytes([len(slots)])
+        seen: set[int] = set()
+        for sd in slots:
+            if not 0 <= sd.n < SLOT_COUNT or sd.n in seen:
+                raise SealError("damaged", "slot number")
+            seen.add(sd.n)
+            inner = _tlv(_sections(sd.profile, sd.tuning, sd.manifest, {"name": clean_name(sd.name)} if sd.name else None), pad=1)
+            body += struct.pack("<BI", sd.n, len(inner)) + inner
+        sections.append((S_SLOT, body))
     return _tlv(sections)
+
+
+def _decode(sec: dict[int, bytes]) -> tuple[Optional[ProfileState], Optional[tuple[int, int]], Optional[dict], dict]:
+    """The profile / levels / manifest / meta of one set of sections (shared by the flat file and by every slot inside a file)."""
+    profile = tuning = manifest = None
+    meta: dict = {}
+    if S_PROFILE in sec:
+        try:
+            validate(sec[S_PROFILE])
+            profile = ProfileState.unpack(sec[S_PROFILE])
+        except ProfileVersionError:
+            raise SealError("version", "the profile inside is newer than this device understands") from None
+        except ProfileError as e:
+            raise SealError("damaged", f"the profile inside: {e}") from None
+    try:
+        if S_TUNING in sec:
+            j = json.loads(sec[S_TUNING].decode("utf-8"))
+            s, t = j["strength"], j["tremor"]
+            for v in (s, t):
+                if isinstance(v, bool) or not isinstance(v, int) or not T.LEVEL_MIN <= v <= T.LEVEL_MAX:
+                    raise ValueError("levels out of range")
+            tuning = (s, t)
+        if S_MANIFEST in sec:
+            manifest = json.loads(sec[S_MANIFEST].decode("utf-8"))
+            if not isinstance(manifest, dict):
+                raise ValueError("manifest must be an object")
+        if S_META in sec:
+            m = json.loads(sec[S_META].decode("utf-8"))
+            meta = {"name": _clean(m.get("name", "")), "created": _clean(m.get("created", ""), 10)} if isinstance(m, dict) else {}
+    except (ValueError, KeyError, TypeError, UnicodeDecodeError) as e:
+        raise SealError("damaged", f"section content: {e}") from None
+    return profile, tuning, manifest, meta
+
+
+def _decode_slots(body: bytes) -> list[SlotData]:
+    if not body or body[0] == 0:
+        raise SealError("damaged", "no slots")
+    n, pos, out, seen = body[0], 1, [], set()
+    for _ in range(n):
+        if pos + 5 > len(body):
+            raise SealError("damaged", "truncated slot header")
+        k, ln = struct.unpack_from("<BI", body, pos)
+        pos += 5
+        if pos + ln > len(body):
+            raise SealError("damaged", "truncated slot")
+        if k >= SLOT_COUNT or k in seen:
+            raise SealError("damaged", "slot number")
+        seen.add(k)
+        sec = _untlv(body[pos : pos + ln], pad=1)
+        pos += ln
+        if any(t not in (S_PROFILE, S_TUNING, S_MANIFEST, S_META) for t in sec) or not sec:
+            raise SealError("unsupported" if sec else "damaged", "a section that does not belong in a slot")
+        profile, tuning, manifest, meta = _decode(sec)
+        out.append(SlotData(k, profile, tuning, manifest, clean_name(meta.get("name", ""))))
+    if pos != len(body):
+        raise SealError("damaged", "trailing bytes after the slots")
+    return out
 
 
 # ---------------------------------------------------------------------------------------------------------------- keys
@@ -95,13 +182,14 @@ def _key(shared: bytes, eph_pub: bytes, recipient_x: bytes, sender_digest: bytes
 
 
 def seal(sender: Identity, recipient: Card, seq: int, *, profile: Optional[ProfileState] = None, tuning: Optional[tuple[int, int]] = None,
-         manifest: Optional[dict] = None, meta: Optional[dict] = None, rng: Callable[[int], bytes] = os.urandom) -> bytes:
+         manifest: Optional[dict] = None, meta: Optional[dict] = None, slots: Optional[list[SlotData]] = None,
+         rng: Callable[[int], bytes] = os.urandom) -> bytes:
     """Seal what the arguments carry to `recipient` (a verified Card). `rng` is injectable for the fixed test vectors only."""
     ser, _, x25519 = _lib()
     from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
     if not recipient.verify():
         raise SealError("bad_signature", "the recipient's card is not valid")
-    inner = encode_inner(profile, tuning, manifest, meta)
+    inner = encode_inner(profile, tuning, manifest, meta, slots)
     bundle_id, nonce, eph_seed = rng(16), rng(12), rng(32)
     eph = x25519.X25519PrivateKey.from_private_bytes(eph_seed)
     eph_pub = eph.public_key().public_bytes(ser.Encoding.Raw, ser.PublicFormat.Raw)
@@ -130,6 +218,7 @@ class Opened:
     tuning: Optional[tuple[int, int]]
     manifest: Optional[dict]
     meta: dict
+    slots: list[SlotData] = field(default_factory=list)
 
     @property
     def sender_id(self) -> str:
@@ -172,31 +261,10 @@ def open_sealed(raw: bytes, me: Identity) -> Opened:
         raise SealError("unsupported", "a section this device does not understand (model weights are not accepted yet)")
     if not sec:
         raise SealError("damaged", "nothing inside")
-    profile = tuning = manifest = None
-    meta: dict = {}
-    if S_PROFILE in sec:
-        try:
-            validate(sec[S_PROFILE])
-            profile = ProfileState.unpack(sec[S_PROFILE])
-        except ProfileVersionError:
-            raise SealError("version", "the profile inside is newer than this device understands") from None
-        except ProfileError as e:
-            raise SealError("damaged", f"the profile inside: {e}") from None
-    try:
-        if S_TUNING in sec:
-            j = json.loads(sec[S_TUNING].decode("utf-8"))
-            s, t = j["strength"], j["tremor"]
-            for v in (s, t):
-                if isinstance(v, bool) or not isinstance(v, int) or not T.LEVEL_MIN <= v <= T.LEVEL_MAX:
-                    raise ValueError("levels out of range")
-            tuning = (s, t)
-        if S_MANIFEST in sec:
-            manifest = json.loads(sec[S_MANIFEST].decode("utf-8"))
-            if not isinstance(manifest, dict):
-                raise ValueError("manifest must be an object")
-        if S_META in sec:
-            m = json.loads(sec[S_META].decode("utf-8"))
-            meta = {"name": _clean(m.get("name", "")), "created": _clean(m.get("created", ""), 10)} if isinstance(m, dict) else {}
-    except (ValueError, KeyError, TypeError, UnicodeDecodeError) as e:
-        raise SealError("damaged", f"section content: {e}") from None
-    return Opened(s_ed, s_x, sdig, seq, flags, bundle_id, sdig == me.digest, profile, tuning, manifest, meta)
+    slots: list[SlotData] = []
+    if S_SLOT in sec:
+        if any(t in sec for t in FLAT):
+            raise SealError("damaged", "a file is either about the active slot or about named slots")
+        slots = _decode_slots(sec[S_SLOT])
+    profile, tuning, manifest, meta = _decode({t: v for t, v in sec.items() if t != S_SLOT})
+    return Opened(s_ed, s_x, sdig, seq, flags, bundle_id, sdig == me.digest, profile, tuning, manifest, meta, slots)

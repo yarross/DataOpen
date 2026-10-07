@@ -150,7 +150,7 @@ def test_reassembler_survives_random_chunks():
 
 def test_status_layout_is_fixed_and_fits_the_default_mtu():
     assert P.STATUS_SIZE == 20 <= 23 - 3
-    s = P.StatusSnapshot(1, 3, 8, P.SF_ASSIST_WANTED | P.SF_TRIAL, 70, P.RB_ASC | P.RB_TREMOR, 513, 4, 86400, 12, 6, 4)
+    s = P.StatusSnapshot(1, 3, 8, P.SF_ASSIST_WANTED | P.SF_TRIAL, 70, P.RB_ASC | P.RB_TREMOR, 513, 4, 1440, 12, 6, 4, 2, 0b0101)
     b = s.pack()
     assert len(b) == 20 and P.StatusSnapshot.unpack(b) == s
     assert s.reason_name == "PANIC"
@@ -158,9 +158,9 @@ def test_status_layout_is_fixed_and_fits_the_default_mtu():
 
 
 def test_status_values_saturate_instead_of_wrapping():
-    s = P.StatusSnapshot(uptime_s=2**40, trial_left_s=10**6, state_rev=70000)
+    s = P.StatusSnapshot(uptime_min=2**40, trial_left_s=10**6, state_rev=70000, slot=3, slot_mask=0x1F5)
     u = P.StatusSnapshot.unpack(s.pack())
-    assert u.trial_left_s == 0xFFFF and u.uptime_s == 2**40 & 0xFFFFFFFF and u.state_rev == 70000 & 0xFFFF
+    assert u.trial_left_s == 0xFFFF and u.uptime_min == 0xFFFF and u.state_rev == 70000 & 0xFFFF and (u.slot, u.slot_mask) == (3, 0xF5)
 
 
 def test_info_layout():

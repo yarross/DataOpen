@@ -1,8 +1,8 @@
-// Manifest + state + language -> a plain tree the DOM layer draws. Pure, so it is tested without a browser. The client knows eight control
+// Manifest + state + language -> a plain tree the DOM layer draws. Pure, so it is tested without a browser. The client knows nine control
 // kinds and no screen by name: anything else becomes a neutral 'not supported' note, never an error.
 import { pick, t } from './i18n.js';
 
-export const KINDS = ['status', 'toggle', 'stepper', 'action', 'meter', 'note', 'file', 'group'];
+export const KINDS = ['status', 'toggle', 'stepper', 'action', 'meter', 'note', 'file', 'group', 'text'];
 
 const txt = (o, lang) => pick(o, lang);
 
@@ -38,7 +38,12 @@ function node(c, state, lang) {
     case 'note':
       return { ...base, kind: 'note' };
     case 'file':
-      return { ...base, kind: 'file', op: c.op, accept: typeof c.accept === 'string' ? c.accept : '', maxBytes: Number.isInteger(c.max_bytes) ? c.max_bytes : 0 };
+      return { ...base, kind: 'file', op: c.op, accept: typeof c.accept === 'string' ? c.accept : '', maxBytes: Number.isInteger(c.max_bytes) ? c.max_bytes : 0,
+        scope: c.scope === 'all' ? 'all' : 'active' };
+    case 'text': {
+      const maxLen = Number.isInteger(c.maxlen) && c.maxlen > 0 ? Math.min(c.maxlen, 40) : 24;
+      return { ...base, kind: 'text', value: typeof v === 'string' ? v : '', known: typeof v === 'string', maxLen };
+    }
     case 'group':
       return { ...base, kind: 'group', nodes: (Array.isArray(c.controls) ? c.controls : []).map((x) => node(x, state, lang)) };
     default:

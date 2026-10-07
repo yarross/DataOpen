@@ -54,12 +54,12 @@ check('the page loads, connects by itself and shows the device state in words', 
 });
 
 check('every button is at least 64 px each way and at least 12 px from the next one', async () => {
-  const boxes = await page.$$eval('button:not([hidden])', (els) => els.filter((e) => e.offsetParent !== null || getComputedStyle(e).position === 'fixed')
-    .map((e) => { const r = e.getBoundingClientRect(); return { n: e.textContent.trim().slice(0, 30), x: r.x, y: r.y, w: r.width, h: r.height }; }));
+  const boxes = await page.$$eval('button:not([hidden])', (els) => els.filter((e) => e.checkVisibility({ contentVisibilityAuto: true }) && (e.offsetParent !== null || getComputedStyle(e).position === 'fixed'))
+    .map((e) => { const r = e.getBoundingClientRect(); return { n: e.textContent.trim().slice(0, 30), x: r.x, y: r.y, w: r.width, h: r.height, fixed: !!e.closest('.safety') }; }));
   assert.ok(boxes.length >= 6);
   for (const b of boxes) assert.ok(b.w >= 63.5 && b.h >= 63.5, `${b.n}: ${b.w.toFixed(1)} x ${b.h.toFixed(1)}`);
   for (const a of boxes) for (const b of boxes) {
-    if (a === b) continue;
+    if (a === b || a.fixed !== b.fixed) continue;                         // the fixed safety bar overlays the page until it is scrolled; the page has room for it
     const gapX = Math.max(b.x - (a.x + a.w), a.x - (b.x + b.w)), gapY = Math.max(b.y - (a.y + a.h), a.y - (b.y + b.h));
     const gap = Math.max(gapX, gapY);
     assert.ok(gap >= 11.5 || (gapX < 0 && gapY < 0 && false), `${a.n} / ${b.n}: gap ${gap.toFixed(1)}`);
@@ -194,7 +194,7 @@ check('the device card and a copy for this device are saved to the phone, and th
   await shot('12-device-id');
   await tapBtn('Профиль');
   const dlCopy = page.waitForEvent('download');
-  await tapBtn('Сохранить копию для этого устройства');
+  await tapBtn('Сохранить копию этого слота');
   const copy = await dlCopy;
   assert.match(copy.suggestedFilename(), /\.dobundle$/);
   const bytes = readFileSync(await copy.path());
@@ -204,10 +204,49 @@ check('the device card and a copy for this device are saved to the phone, and th
   await page.waitForFunction(() => /Настройки загружены/.test(document.querySelector('.message')?.textContent || ''), null, { timeout: 8000 });
 });
 
+check('slots: one row opens the picker, one tap picks a slot, the name and the clearing work, the LED and the state agree', async () => {
+  await tapBtn('Выключить помощь').catch(() => {});
+  const summary = page.locator('.slots > summary');
+  assert.match(await summary.innerText(), /Сменить слот/);
+  assert.match(await text('.state .slot-line'), /^Слот 1/);
+  assert.equal(await page.locator('.slots').evaluate((e) => e.open), false);       // closed: the controls stay in view
+  assert.equal(await page.locator('.slot-grid .btn').first().isVisible(), false);   // and nothing of the grid is on screen or in the way
+  await summary.tap();
+  await page.waitForSelector('.slot-grid .btn');
+  const boxes = await page.$$eval('.slot-grid .btn', (els) => els.map((e) => { const r = e.getBoundingClientRect(); return { w: r.width, h: r.height, pressed: e.getAttribute('aria-pressed') }; }));
+  assert.equal(boxes.length, 4);
+  assert.ok(boxes.every((b) => b.w >= 63.5 && b.h >= 63.5), JSON.stringify(boxes));
+  assert.deepEqual(boxes.map((b) => b.pressed), ['true', 'false', 'false', 'false']);
+  await shot('15-slots');
+  await page.locator('.slot-grid .btn').nth(1).tap();
+  await until(async () => (await bridge()).slot === 1, 3000, 'slot 1 on the device');
+  await until(async () => /^Слот 2/.test(await text('.state .slot-line')), 3000, 'the state card says slot 2');
+  assert.equal(await page.locator('.slots').evaluate((e) => e.open), false);          // picking closes it again
+  assert.deepEqual((await bridge()).leds, [0, 1, 0, 0]);
+  assert.equal((await bridge()).assist_wanted, false);
+  await tapBtn('Профиль');
+  await page.getByLabel('Название слота').fill('Браузер');
+  await tapBtn('Сохранить');
+  await until(async () => /Браузер/.test(await text('.state .slot-line')), 3000, 'the name in the state card');
+  assert.deepEqual((await bridge()).names, ['', 'Браузер', '', '']);
+  await shot('16-slot-named');
+  await tapBtn('Очистить этот слот');
+  await tapBtn('Подтвердить');
+  await page.waitForFunction(() => /кнопк\S* на устройстве/.test(document.querySelector('.message')?.textContent || ''), null, { timeout: 5000 });
+  await fetch(base + 'sim/press/confirm');
+  await tapBtn('Повторить');
+  await page.waitForFunction(() => /Слот очищен/.test(document.querySelector('.message')?.textContent || ''), null, { timeout: 5000 });
+  assert.deepEqual((await bridge()).names, ['', '', '', '']);
+  await summary.tap();
+  await page.locator('.slot-grid .btn').nth(0).tap();
+  await until(async () => (await bridge()).slot === 0, 3000, 'back to slot 0');
+  assert.equal((await bridge()).slots[0], true);                                       // the first slot kept its profile through all of it
+});
+
 check('erasing personal data needs the button on the device: the message says so, and "Try again" finishes it', async () => {
   await tapBtn('Выключить помощь').catch(() => {});
   await tapBtn('Ещё');
-  await tapBtn('Стереть личные данные');
+  await tapBtn('Стереть личные данные (все слоты)');
   await shot('13-erase-confirm');
   await tapBtn('Подтвердить');
   await page.waitForFunction(() => /кнопк\S* на устройстве/.test(document.querySelector('.message')?.textContent || ''), null, { timeout: 5000 });

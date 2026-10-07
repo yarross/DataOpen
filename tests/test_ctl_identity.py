@@ -114,3 +114,47 @@ def test_signing_and_agreement_work_and_differ_per_device(tmp_path):
     assert a.exchange(b.x_pub) == b.exchange(a.x_pub)
     assert a.exchange(b.x_pub) != a.exchange(a.x_pub)
     assert a.sign(b"x") != b.sign(b"x") and len(a.sign(b"x")) == 64
+
+
+# ---------------------------------------------------------------------------------------------------------------- slot keys
+def test_every_slot_has_its_own_key_derived_from_the_device_key(tmp_path):
+    a, b = ident(tmp_path, "a"), ident(tmp_path, "b")
+    keys = [a.slot_key(k) for k in range(4)]
+    assert len(set(keys)) == 4 and all(len(k) == 32 for k in keys) and a.storage_key not in keys
+    assert keys == [a.slot_key(k) for k in range(4)]                                        # deterministic
+    assert [a.slot_key(k) for k in range(4)] != [b.slot_key(k) for k in range(4)]            # and tied to THIS device's key
+
+
+def test_clearing_a_slot_changes_only_that_slots_key_and_it_survives_a_restart(tmp_path):
+    a = ident(tmp_path)
+    before = [a.slot_key(k) for k in range(4)]
+    a.bump_slot_epoch(2)
+    after = [a.slot_key(k) for k in range(4)]
+    assert after[2] != before[2] and [after[k] for k in (0, 1, 3)] == [before[k] for k in (0, 1, 3)]
+    assert (a.slot_epoch(2), a.slot_epoch(0), a.slot_epoch(3)) == (1, 0, 0)
+    b = ident(tmp_path)                                                                     # the epoch is stored with the keys
+    assert [b.slot_key(k) for k in range(4)] == after
+    b.bump_slot_epoch(2)
+    assert b.slot_epoch(2) == 2 and b.slot_key(2) not in (before[2], after[2])              # an old key never comes back
+
+
+def test_a_new_storage_key_kills_every_slot_key_and_resets_the_epochs(tmp_path):
+    a = ident(tmp_path)
+    a.bump_slot_epoch(1)
+    old = [a.slot_key(k) for k in range(4)]
+    a.rotate_storage_key()
+    assert a.slot_epochs == [] and not set(old) & {a.slot_key(k) for k in range(4)}
+    assert ident(tmp_path).slot_epochs == []
+
+
+def test_damaged_epochs_in_the_key_file_read_as_none(tmp_path):
+    a = ident(tmp_path)
+    p = tmp_path / "k" / "keys.json"
+    d = json.loads(p.read_text())
+    d["epochs"] = "garbage"
+    p.write_text(json.dumps(d))
+    assert ident(tmp_path).slot_epochs == []
+    d["epochs"] = [1, -5]
+    p.write_text(json.dumps(d))
+    assert ident(tmp_path).slot_epochs == []
+    assert a.id == ident(tmp_path).id

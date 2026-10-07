@@ -118,8 +118,8 @@ export function unpackStatus(b) {
   const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
   const s = {
     bridge: dv.getUint8(1), mode: dv.getUint8(2), reason: dv.getUint8(3), flags: dv.getUint16(4, true), fill: dv.getUint8(6),
-    ready: dv.getUint8(7), stateRev: dv.getUint16(8, true), manifestRev: dv.getUint16(10, true), uptimeS: dv.getUint32(12, true),
-    trialLeftS: dv.getUint16(16, true), strength: dv.getUint8(18), tremor: dv.getUint8(19),
+    ready: dv.getUint8(7), stateRev: dv.getUint16(8, true), manifestRev: dv.getUint16(10, true), uptimeMin: dv.getUint16(12, true),
+    trialLeftS: dv.getUint16(14, true), strength: dv.getUint8(16), tremor: dv.getUint8(17), slot: dv.getUint8(18), slotMask: dv.getUint8(19),
   };
   s.reasonName = s.reason < REASONS.length ? REASONS[s.reason] : `R${s.reason}`;
   return s;
@@ -137,10 +137,12 @@ export function packStatus(s) {
   dv.setUint8(7, s.ready ?? 0);
   dv.setUint16(8, s.stateRev ?? 0, true);
   dv.setUint16(10, s.manifestRev ?? 0, true);
-  dv.setUint32(12, (s.uptimeS ?? 0) >>> 0, true);
-  dv.setUint16(16, Math.min(s.trialLeftS ?? 0, 0xffff), true);
-  dv.setUint8(18, s.strength ?? 255);
-  dv.setUint8(19, s.tremor ?? 255);
+  dv.setUint16(12, Math.min(s.uptimeMin ?? 0, 0xffff), true);
+  dv.setUint16(14, Math.min(s.trialLeftS ?? 0, 0xffff), true);
+  dv.setUint8(16, s.strength ?? 255);
+  dv.setUint8(17, s.tremor ?? 255);
+  dv.setUint8(18, s.slot ?? 0);
+  dv.setUint8(19, s.slotMask ?? 0);
   return out;
 }
 

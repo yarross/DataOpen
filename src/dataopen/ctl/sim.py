@@ -27,6 +27,28 @@ from .gateway import Gateway, Learner
 from .manifest import Manifest
 
 
+# The simulation's 'manufacturer'. A TEST key, public in this repository on purpose: the simulator has no secrets, and a device only takes
+# updates when it was built with a vendor key (docs/SLOTS.md). A real product's key is held offline and never appears in a repository.
+DEV_VENDOR_SEED = bytes(range(32))
+DEV_HW = b"DOHW0001"
+
+
+def dev_vendor():
+    """(signer, public key bytes) of the simulation's manufacturer."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+    k = ed25519.Ed25519PrivateKey.from_private_bytes(DEV_VENDOR_SEED)
+    return k, k.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+
+
+def dev_image(version: int, min_version: Optional[int] = None, payload: Optional[bytes] = None, hw: bytes = DEV_HW) -> bytes:
+    """A firmware image signed by the simulation's manufacturer."""
+    from .firmware import build_image
+    signer, _ = dev_vendor()
+    return build_image(payload if payload is not None else (b"firmware-%d-" % version) * 400, hw, version,
+                       version if min_version is None else min_version, signer)
+
+
 class SimLearner:
     """A simulated person who 'uses the mouse' while calibration runs. `speed` = simulated seconds of use per second of device time."""
 

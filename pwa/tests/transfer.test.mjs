@@ -74,3 +74,39 @@ test('erasing on B takes the profile away, and the old file no longer works ther
   await assert.rejects(b.putBundle(copy), (e) => e.key === 'err.wrong_device');   // after a factory reset it is a different device
   b.close();
 });
+
+test('one file for ALL slots carries every slot by number to another device, names included, and only that device opens it', { skip }, async () => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const until = async (fn, what) => { for (let i = 0; i < 200; i++) { if (await fn()) return; await sleep(25); } throw new Error(`timed out waiting for ${what}`); };
+  const a = await open(A), b = await open(B);
+  await a.stop();
+  // a second context on A: its own profile copied into slot 2 (a file lands in the ACTIVE slot), with a name
+  const copy = await a.getBundle('self');
+  await a.selectSlot(2);
+  await a.putBundle(copy);
+  await a.set('slot.name', 'Браузер');
+  await a.selectSlot(0);
+  await a.set('slot.name', 'Работа');
+  const cardB = await b.getIdentity();
+  await assert.rejects(a.getBundle(cardB, 'all'), (e) => e.code === ERR.PHYSICAL && e.key === 'err.physical.export');
+  await press(A);
+  const raw = await a.getBundle(cardB, 'all');
+  assert.equal(String.fromCharCode(...raw.slice(0, 4)), 'DOBS');
+  assert.ok(!String.fromCharCode(...raw).includes('BIOP') && !String.fromCharCode(...raw).includes('Браузер'));   // nothing readable in it
+  await assert.rejects(a.putBundle(raw), (e) => e.key === 'err.wrong_device');      // not on A itself
+  await press(B);                                                                    // B has just been reset: A is a new sender to it
+  assert.equal((await b.putBundle(raw)).json.ok, true);
+  await until(() => b.state['slot.0.name'] === 'Работа' && b.state['slot.2.name'] === 'Браузер', 'the names on B');
+  assert.equal(b.status.slotMask & 0b1111, 0b0101);                                  // slots 0 and 2 hold a profile on B, 1 and 3 do not
+  await b.selectSlot(2);
+  await until(() => b.status.slot === 2, 'B on slot 2');
+  assert.ok(b.status.fill > 0 || b.state['profile.fill'] > 0);
+  await b.selectSlot(0);
+  // put A back as it was
+  await a.selectSlot(2);
+  await press(A);
+  await a.act('slot.clear', true);
+  await a.selectSlot(0);
+  a.close();
+  b.close();
+});

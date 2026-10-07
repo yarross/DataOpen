@@ -136,3 +136,20 @@ nav.pages .btn[aria-current="page"] { background: var(--accent); color: var(--on
 .connect p { text-align: left; }
 
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; scroll-behavior: auto !important; } }
+
+/* hardware slots: four big buttons, two by two; the active one is filled and ticked, never told by colour alone */
+.state .slot-line { margin: 0.25rem 0 0; font-weight: 700; }
+.slots { margin-bottom: var(--gap); }
+.slots h2 { margin: 0.75rem 0 0.5rem; }
+.slots > summary { list-style: none; width: 100%; }
+.slots > summary::-webkit-details-marker { display: none; }
+.slots > summary::before { content: "▸ "; white-space: pre; }
+.slots[open] > summary::before { content: "▾ "; white-space: pre; }
+.slot-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+.slot-grid .btn { flex-direction: column; gap: 0.25rem; min-height: 5rem; padding: 0.5rem 0.5rem; overflow-wrap: anywhere; }
+.slot-grid .btn::before { content: none !important; }
+.slot-grid .btn[aria-pressed="true"] .slot-name::before { content: "✓ "; }
+.slot-grid .slot-hint { font-weight: 400; }
+.control .text { display: block; width: 100%; min-height: var(--target); margin: 0 0 0.75rem; padding: 0.5rem 0.75rem; font: inherit;
+  color: var(--text); background: var(--bg); border: var(--stroke) solid var(--border); border-radius: var(--radius); }
+.progress-text { font-weight: 700; margin: 0.5rem 0 0; }

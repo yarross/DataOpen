@@ -6,7 +6,7 @@
 //   write(chunk: Uint8Array) -> Promise                                              one chunk to the device
 //   close()                                                                           ends the connection
 //   onChunk(u8), onStatus(u8), onClose()                                              set by the session
-import { T, VER, ERR, CHUNK_MIN, CHUNK_MAX } from './constants.js';
+import { T, VER, ERR, CHUNK_MIN, CHUNK_MAX, FW_CHUNK_MAX } from './constants.js';
 import { packMessage, packJson, unpackMessage, bodyJson, chunkMessage, Reassembler, unpackStatus, unpackInfo, crc32 } from './link.js';
 import { errKeyFor, errParams } from './i18n.js';
 
@@ -258,9 +258,40 @@ export class Session {
   stop() { return this.request(T.STOP, {}, { urgent: true, body: new Uint8Array(0) }); }
   hardBypass() { return this.request(T.HARD_BYPASS, {}, { urgent: true, body: new Uint8Array(0) }); }
   putBundle(bytes) { return this.request(T.BUNDLE_PUT, {}, { body: bytes, timeoutMs: 20000 }); }
-  // 'self' (a copy only this device can open) or another device's card (a parsed .docard); the file comes back sealed, the page never reads it
-  async getBundle(target = 'self') { return (await this.request(T.GET, { what: 'bundle', for: target }, { timeoutMs: 20000 })).body; }
+  // 'self' (a copy only this device can open) or another device's card (a parsed .docard); the file comes back sealed, the page never reads it.
+  // scope: 'active' (the slot in use) or 'all' (every slot that holds anything, in one file)
+  async getBundle(target = 'self', scope = 'active') { return (await this.request(T.GET, { what: 'bundle', for: target, scope }, { timeoutMs: 20000 })).body; }
   async getIdentity() { return (await this.request(T.GET, { what: 'identity' })).json; }
+  selectSlot(k) { return this.request(T.SET, { key: 'slot.active', value: k }); }
+  async getSlots() { return (await this.request(T.GET, { what: 'slots' })).json; }
+  async getFirmware() { return (await this.request(T.GET, { what: 'firmware' })).json; }
+  // A firmware image goes to the device in order, in pieces; the device checks the whole of it (the manufacturer's signature, the hardware,
+  // the version) and puts it into the bank that is not running. The page only carries bytes. A piece that was not acknowledged is asked about
+  // ('where are you?') and the upload goes on from there, a few times, before it gives up. Resolves with the device's answer to the end.
+  async putFirmware(bytes, onProgress = () => {}, { retries = 3, pieceTimeoutMs = 20000 } = {}) {
+    await this.request(T.FW_BEGIN, { size: bytes.length, name: 'update' }, { timeoutMs: 10000 });
+    let off = 0, left = retries;
+    onProgress(0);
+    while (off < bytes.length) {
+      const piece = bytes.subarray(off, Math.min(off + FW_CHUNK_MAX, bytes.length));
+      const body = new Uint8Array(4 + piece.length);
+      new DataView(body.buffer).setUint32(0, off, true);
+      body.set(piece, 4);
+      try {
+        const r = await this.request(T.FW_CHUNK, {}, { body, timeoutMs: pieceTimeoutMs });
+        off = Number.isInteger(r.json.next) ? r.json.next : off + piece.length;
+        left = retries;
+        onProgress(off / bytes.length);
+      } catch (e) {
+        const resync = e instanceof SessionError && (e.key === 'err.timeout' || (e.code === ERR.FW_REJECTED && e.detail === 'sequence'));
+        if (!resync || left-- <= 0) throw e;
+        const up = (await this.getFirmware()).upload;
+        if (!up || !Number.isInteger(up.next)) throw e;
+        off = up.next;
+      }
+    }
+    return this.request(T.FW_END, {}, { body: new Uint8Array(0), timeoutMs: 30000 });
+  }
   ping() { return this.request(T.PING, {}); }
 }
 

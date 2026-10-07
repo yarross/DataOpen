@@ -6,7 +6,7 @@ import { WsTransport } from './transport/ws.js';
 import { Store } from './store.js';
 import { UI, download } from './dom.js';
 import { buildView } from './view.js';
-import { describe, trialModel } from './shell.js';
+import { describe, trialModel, slotsModel } from './shell.js';
 import { detectLang, t, LANGS } from './i18n.js';
 import { ERR } from './constants.js';
 import { VERSION } from './build.js';
@@ -53,7 +53,10 @@ export async function start(root = document.getElementById('app'), env = {}) {
       if (key === '__bypass') { await session.hardBypass(); say('info', t(prefs.lang, 'bypass.done')); return; }
       await session.act(key, confirmed);
       if (key === 'erase.profile' || key === 'factory.reset') say('info', t(prefs.lang, 'erase.done'));
+      else if (key === 'slot.clear') say('info', t(prefs.lang, 'slot.cleared'));
+      else if (key === 'fw.apply' || key === 'fw.rollback') say('info', t(prefs.lang, 'fw.applying'));
     }),
+    slot: (k) => guarded(() => session.selectSlot(k)),
     choice: (key, value) => {
       if (key === 'lang') { prefs.lang = value; session && (session.lang = value); store.set('lang', value); }
       if (key === 'theme') { prefs.theme = value; applyTheme(); store.set('theme', value); }
@@ -63,8 +66,9 @@ export async function start(root = document.getElementById('app'), env = {}) {
     file: (node, file) => guarded(async () => {
       const day = new Date().toISOString().slice(0, 10);
       if (node.op === 'bundle_get') {                                    // a copy sealed to THIS device; the page only carries the bytes
-        download(await session.getBundle('self'), `dataopen-copy-${day}.dobundle`);
-        say('info', t(prefs.lang, 'file.copy_saved'));
+        const all = node.scope === 'all';
+        download(await session.getBundle('self', node.scope), `dataopen-${all ? 'all-slots' : 'copy'}-${day}.dobundle`);
+        say('info', t(prefs.lang, all ? 'file.copy_all_saved' : 'file.copy_saved'));
       } else if (node.op === 'card_get') {
         const card = await session.getIdentity();
         download(new TextEncoder().encode(JSON.stringify(card)), `dataopen-${card.id}.docard`, 'application/json');
@@ -75,8 +79,15 @@ export async function start(root = document.getElementById('app'), env = {}) {
         let card;
         try { card = JSON.parse(await file.text()); } catch { card = null; }
         if (!card || typeof card !== 'object' || typeof card.id !== 'string') { say('error', t(prefs.lang, 'file.bad_card')); return; }
-        download(await session.getBundle(card), `dataopen-for-${card.id}-${day}.dobundle`);
+        download(await session.getBundle(card, node.scope), `dataopen-for-${card.id}-${day}.dobundle`);
         say('info', t(prefs.lang, 'file.for_saved', { id: card.id }));
+      } else if (node.op === 'fw_put') {                                 // an update image: opaque bytes, checked in full by the device
+        if (!file) return;
+        if (node.maxBytes && file.size > node.maxBytes) { say('error', t(prefs.lang, 'file.too_big')); return; }
+        let shown = -1;
+        const progress = (p) => { const pct = Math.floor(p * 100); if (pct !== shown && (pct - shown >= 5 || pct === 100)) { shown = pct; say('info', t(prefs.lang, 'fw.progress', { pct })); } };
+        await session.putFirmware(new Uint8Array(await file.arrayBuffer()), progress);
+        say('info', t(prefs.lang, 'fw.staged'));
       } else if (file) {
         if (node.maxBytes && file.size > node.maxBytes) { say('error', t(prefs.lang, 'file.too_big')); return; }
         say('info', t(prefs.lang, 'file.working'));
@@ -128,7 +139,7 @@ export async function start(root = document.getElementById('app'), env = {}) {
     const supported = !!transport;
     const shell = supported ? describe(status, conn, lang) : { tone: 'warn', icon: '!', title: t(lang, 'conn.unsupported'), hint: t(lang, 'conn.unsupported.hint') };
     return {
-      lang, shell, trial: connected ? trialModel(status, lang) : null, pages, currentPage: pages.some((p) => p.id === app.page) ? app.page : pages[0]?.id,
+      lang, shell, trial: connected ? trialModel(status, lang) : null, slots: slotsModel(status, session?.state, conn, lang), pages, currentPage: pages.some((p) => p.id === app.page) ? app.page : pages[0]?.id,
       online: connected, canStop: !!session?.linked, updateAvailable: app.updateAvailable, message: app.message,
       connect: { show: !connected, canConnect: supported, busy: conn === 'connecting' || app.busy,
         steps: [1, 2, 3].map((i) => t(lang, `conn.step${i}`)),

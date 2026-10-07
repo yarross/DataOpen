@@ -175,12 +175,28 @@
           "accept": ".dobundle",
           "max_bytes": 16000,
           "label": {
-            "ru": "Сохранить копию для этого устройства",
-            "en": "Save a copy for this device"
+            "ru": "Сохранить копию этого слота",
+            "en": "Save a copy of this slot"
           },
           "help": {
             "ru": "Файл зашифрован и откроется только на этом устройстве.",
             "en": "The file is encrypted and opens only on this device."
+          }
+        },
+        {
+          "id": "export_all",
+          "type": "file",
+          "op": "bundle_get",
+          "scope": "all",
+          "accept": ".dobundle",
+          "max_bytes": 16000,
+          "label": {
+            "ru": "Сохранить копию всех слотов",
+            "en": "Save a copy of all slots"
+          },
+          "help": {
+            "ru": "Все слоты в одном файле. Откроется только на этом устройстве.",
+            "en": "All the slots in one file. It opens only on this device."
           }
         },
         {
@@ -206,6 +222,35 @@
           "label": {
             "ru": "Вернуть прежний профиль",
             "en": "Restore the previous profile"
+          }
+        },
+        {
+          "id": "slot_name",
+          "type": "text",
+          "key": "slot.name",
+          "maxlen": 24,
+          "label": {
+            "ru": "Название слота",
+            "en": "Slot name"
+          },
+          "help": {
+            "ru": "Например «Работа» или «Браузер». Название видно только на этом устройстве и в телефоне.",
+            "en": "For example \"Work\" or \"Browser\". Shown only on this device and in the phone."
+          }
+        },
+        {
+          "id": "slot_clear",
+          "type": "action",
+          "key": "slot.clear",
+          "confirm": "two-step",
+          "danger": true,
+          "label": {
+            "ru": "Очистить этот слот",
+            "en": "Clear this slot"
+          },
+          "help": {
+            "ru": "Стирает профиль, уровни и название только в этом слоте. Остальные слоты не затрагиваются. Помощь выключится. Потребуется нажать кнопку на устройстве.",
+            "en": "Erases the profile, levels and name of this slot only. The other slots are not touched. Assistance turns off. You will need to press the button on the device."
           }
         }
       ]
@@ -251,6 +296,85 @@
           }
         },
         {
+          "id": "fw_version",
+          "type": "status",
+          "key": "fw.version",
+          "label": {
+            "ru": "Версия прошивки",
+            "en": "Firmware version"
+          }
+        },
+        {
+          "id": "fw_state",
+          "type": "status",
+          "key": "fw.state",
+          "map": {
+            "unsupported": {
+              "ru": "Обновление не поддерживается",
+              "en": "Updates are not supported"
+            },
+            "current": {
+              "ru": "Установлена, обновлений нет",
+              "en": "Installed, nothing pending"
+            },
+            "staged": {
+              "ru": "Обновление загружено и ждёт применения",
+              "en": "An update is loaded and waiting to be applied"
+            },
+            "trial": {
+              "ru": "Новая версия проверяется",
+              "en": "The new version is being checked"
+            }
+          },
+          "label": {
+            "ru": "Обновление",
+            "en": "Update"
+          }
+        },
+        {
+          "id": "fw_put",
+          "type": "file",
+          "op": "fw_put",
+          "accept": ".dofw",
+          "max_bytes": 4194304,
+          "label": {
+            "ru": "Загрузить обновление прошивки",
+            "en": "Load a firmware update"
+          },
+          "help": {
+            "ru": "Файл должен быть подписан производителем. Он ложится во вторую область памяти, пока работает прежняя версия.",
+            "en": "The file must be signed by the manufacturer. It goes into the second memory bank while the current version keeps running."
+          }
+        },
+        {
+          "id": "fw_apply",
+          "type": "action",
+          "key": "fw.apply",
+          "confirm": "two-step",
+          "label": {
+            "ru": "Применить обновление",
+            "en": "Apply the update"
+          },
+          "help": {
+            "ru": "Устройство перезапустится. Если новая версия не заработает как надо, прежняя вернётся сама. Потребуется нажать кнопку на устройстве.",
+            "en": "The device restarts. If the new version does not work properly, the previous one comes back by itself. You will need to press the button on the device."
+          }
+        },
+        {
+          "id": "fw_rollback",
+          "type": "action",
+          "key": "fw.rollback",
+          "confirm": "two-step",
+          "label": {
+            "ru": "Вернуть прежнюю версию",
+            "en": "Go back to the previous version"
+          },
+          "help": {
+            "ru": "Потребуется нажать кнопку на устройстве.",
+            "en": "You will need to press the button on the device."
+          }
+        },
+        {
           "id": "forget",
           "type": "action",
           "key": "pairing.forget",
@@ -272,12 +396,12 @@
           "confirm": "two-step",
           "danger": true,
           "label": {
-            "ru": "Стереть личные данные",
-            "en": "Erase personal data"
+            "ru": "Стереть личные данные (все слоты)",
+            "en": "Erase personal data (all slots)"
           },
           "help": {
-            "ru": "Удаляет профиль, настройки и список доверенных. Помощь выключится. Потребуется нажать кнопку на устройстве.",
-            "en": "Deletes the profile, the settings and the trusted list. Assistance turns off. You will need to press the button on the device."
+            "ru": "Удаляет профили, настройки и список доверенных во всех слотах. Помощь выключится. Потребуется нажать кнопку на устройстве. То же делает удержание кнопки подтверждения 10 секунд.",
+            "en": "Deletes the profiles, the settings and the trusted list in every slot. Assistance turns off. You will need to press the button on the device. Holding the confirm button for 10 seconds does the same."
           }
         },
         {
@@ -291,8 +415,8 @@
             "en": "Factory reset"
           },
           "help": {
-            "ru": "То же, и устройство получит новый номер: все файлы, сделанные для него, перестанут открываться. Нужна кнопка на устройстве.",
-            "en": "The same, and the device gets a new number: every file made for it stops opening. You will need the button on the device."
+            "ru": "То же, и устройство получит новый номер: все файлы, сделанные для него, перестанут открываться. Нужна кнопка на устройстве. То же делает удержание кнопки подтверждения 20 секунд.",
+            "en": "The same, and the device gets a new number: every file made for it stops opening. You will need the button on the device. Holding the confirm button for 20 seconds does the same."
           }
         }
       ]

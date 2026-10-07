@@ -100,6 +100,29 @@ function buildStatus(n) {
   return { el, update(m) { lab.textContent = m.label; v.textContent = m.text; } };
 }
 
+function buildText(n, ctx) {
+  const id = `c-${n.id}`;
+  const lab = h('label', { class: 'label', for: `${id}-i` });
+  const help = h('p', { class: 'help' });
+  const input = h('input', { class: 'text', type: 'text', id: `${id}-i`, autocomplete: 'off', autocapitalize: 'sentences', spellcheck: 'false' });
+  const save = h('button', { class: 'btn wide', type: 'submit' });
+  const el = h('form', { class: 'control', autocomplete: 'off' }, lab, help, input, save);        // a form: the phone's own 'Done' key submits it too
+  let model = n;
+  const go = ctx.guard(n.id, () => ctx.onSet(model.key, input.value.trim()));
+  el.addEventListener('submit', (e) => { e.preventDefault(); go(e); });
+  return { el, update(m) {
+    model = m;
+    lab.textContent = m.label;
+    help.textContent = m.help;
+    help.hidden = !m.help;
+    input.maxLength = m.maxLen;
+    if (document.activeElement !== input) input.value = m.value;       // never overwrite what the person is typing
+    save.textContent = t(ctx.lang, 'text.save');
+    save.disabled = !m.known || !ctx.online;
+    input.disabled = !m.known || !ctx.online;
+  } };
+}
+
 function buildNote(n) {
   const p = h('p', { class: 'muted' });
   const el = h('div', { class: 'control' }, p);
@@ -150,7 +173,7 @@ function buildAction(n, ctx) {
 function buildFile(n, ctx) {
   const lab = h('span', { class: 'label' });
   const help = h('p', { class: 'help' });
-  const takes = n.op === 'bundle_put' || n.op === 'bundle_for_card';      // these two receive a file; the others only hand one to the phone
+  const takes = n.op === 'bundle_put' || n.op === 'bundle_for_card' || n.op === 'fw_put';   // these receive a file; the others only hand one to the phone
   const input = takes ? h('input', { type: 'file', hidden: true, accept: n.accept }) : null;
   const btn = h('button', { class: 'btn wide', type: 'button' });
   const drop = takes ? h('div', { class: 'drop' }) : null;
@@ -169,7 +192,7 @@ function buildFile(n, ctx) {
     lab.textContent = m.label;
     help.textContent = m.help;
     help.hidden = !m.help;
-    btn.textContent = m.op === 'bundle_put' ? t(ctx.lang, 'file.choose') : m.op === 'bundle_for_card' ? t(ctx.lang, 'file.choose_card') : m.label;
+    btn.textContent = m.op === 'bundle_put' || m.op === 'fw_put' ? t(ctx.lang, 'file.choose') : m.op === 'bundle_for_card' ? t(ctx.lang, 'file.choose_card') : m.label;
     lab.hidden = btn.textContent === m.label;
     btn.disabled = !ctx.online;
     if (drop) drop.textContent = t(ctx.lang, 'file.drop');
@@ -201,7 +224,7 @@ function buildGroup(n, ctx) {
 }
 
 const BUILDERS = { toggle: buildToggle, stepper: buildStepper, meter: buildMeter, status: buildStatus, note: buildNote, unknown: buildUnknown,
-  action: buildAction, file: buildFile, choice: buildChoice, group: buildGroup };
+  action: buildAction, file: buildFile, choice: buildChoice, group: buildGroup, text: buildText };
 
 // Keyed reuse: while the list of (id, kind) stays the same only values change, so focus and scroll position survive every update.
 export class Mount {
@@ -227,7 +250,8 @@ export class UI {
     this.stateIcon = h('div', { class: 'icon', 'aria-hidden': 'true' });
     this.stateTitle = h('p', { class: 'title' });
     this.stateHint = h('p', { class: 'hint' });
-    this.state = h('section', { class: 'state', role: 'status', 'aria-live': 'polite' }, this.stateIcon, h('div', {}, this.stateTitle, this.stateHint));
+    this.stateSlot = h('p', { class: 'slot-line' });
+    this.state = h('section', { class: 'state', role: 'status', 'aria-live': 'polite' }, this.stateIcon, h('div', {}, this.stateTitle, this.stateSlot, this.stateHint));
     this.trialText = h('p', { class: 'trial-text' });
     this.keep = h('button', { class: 'btn good', type: 'button', onclick: () => this.hd.confirm(true) });
     this.undo = h('button', { class: 'btn', type: 'button', onclick: () => this.hd.confirm(false) });
@@ -240,6 +264,12 @@ export class UI {
     this.updGo = h('button', { class: 'btn primary', type: 'button', onclick: () => this.hd.applyUpdate() });
     this.updLater = h('button', { class: 'btn', type: 'button', onclick: () => this.hd.dismissUpdate() });
     this.upd = h('section', { class: 'banner' }, this.updText, h('div', { class: 'row' }, this.updGo, this.updLater));
+    // closed by default: one row says 'change slot' and the controls stay in view; a slot picked closes it again
+    this.slotTitle = h('h2', { class: 'label', id: 'slots-title' });
+    this.slotRow = h('div', { class: 'slot-grid', role: 'group', 'aria-labelledby': 'slots-title' });
+    this.slotSummary = h('summary', { class: 'btn slot-summary' });
+    this.slots = h('details', { class: 'slots' }, this.slotSummary, this.slotTitle, this.slotRow);
+    this.slotSig = '';
     this.nav = h('nav', { class: 'pages' });
     this.connSteps = h('ol');
     this.connNotes = h('div');
@@ -252,7 +282,7 @@ export class UI {
     this.safety = h('footer', { class: 'safety' }, h('div', { class: 'inner' }, this.stop, this.stopNote));
     // what must never scroll out of sight (the state, a running trial, a question or an error) lives in one sticky block at the top
     this.top = h('div', { class: 'top' }, this.state, this.trial, this.msg, this.upd);
-    root.replaceChildren(this.top, this.nav, this.connect, this.pageBox, this.safety);
+    root.replaceChildren(this.top, this.slots, this.nav, this.connect, this.pageBox, this.safety);
     this.navSig = '';
   }
 
@@ -266,6 +296,10 @@ export class UI {
     this.stateTitle.textContent = m.shell.title;
     this.stateHint.textContent = m.shell.hint;
     this.stateHint.hidden = !m.shell.hint || !!m.shell.quiet;
+    this.stateSlot.hidden = !m.slots;
+    if (m.slots) this.stateSlot.textContent = m.slots.current;
+    this.slots.hidden = !m.slots;
+    if (m.slots) this.updateSlots(m.slots, m.online);
     this.trial.hidden = !m.trial;
     if (m.trial) {
       this.trialText.textContent = m.trial.text;
@@ -312,6 +346,30 @@ export class UI {
     this.stopNote.hidden = m.canStop;
   }
 }
+
+UI.prototype.updateSlots = function updateSlots(s, online) {
+  this.slotTitle.textContent = s.title;
+  this.slotSummary.textContent = `${s.change}: ${s.current}`;
+  const sig = s.items.map((i) => i.k).join();
+  if (sig !== this.slotSig) {                                          // built once; afterwards only the words and the pressed state change
+    this.slotBtns = s.items.map((i) => {
+      const name = h('span', { class: 'slot-name' });
+      const hint = h('small', { class: 'slot-hint' });
+      const btn = h('button', { class: 'btn slot', type: 'button' }, name, hint);
+      btn.addEventListener('click', this.ctx.guard(`slot${i.k}`, () => { this.slots.open = false; this.hd.slot(i.k); }));
+      return { btn, name, hint };
+    });
+    this.slotRow.replaceChildren(...this.slotBtns.map((x) => x.btn));
+    this.slotSig = sig;
+  }
+  s.items.forEach((i, idx) => {
+    const x = this.slotBtns[idx];
+    x.name.textContent = i.title;
+    x.hint.textContent = i.hint;
+    x.btn.setAttribute('aria-pressed', String(i.active));
+    x.btn.disabled = !online;
+  });
+};
 
 export function download(bytes, name, type = 'application/octet-stream') {
   const url = URL.createObjectURL(new Blob([bytes], { type }));

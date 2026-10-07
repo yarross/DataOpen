@@ -1,6 +1,6 @@
 // The safety shell's model: what to say about the device, from the fixed 20-byte status alone. No manifest is involved, so this works
 // with any firmware that speaks the status layout. Pure: text and a tone in, nothing about the DOM.
-import { SF, RB, MODE_UNKNOWN } from './constants.js';
+import { SF, RB, MODE_UNKNOWN, SLOT_COUNT } from './constants.js';
 import { t, STRINGS } from './i18n.js';
 
 export const MODE = { HW_BYPASS: 0, PROBE: 1, PASSTHRU: 2, ASSIST: 3 };
@@ -36,4 +36,19 @@ export function describe(status, conn, lang) {
 export function trialModel(status, lang) {
   if (!status || !(status.flags & SF.TRIAL)) return null;
   return { left: status.trialLeftS, text: t(lang, 'trial.compact', { n: status.trialLeftS }) };
+}
+
+// The hardware slots, from the fixed status (which slot is active, which hold a profile) and the names the device announces in its state.
+// Part of the safety shell on purpose: whatever layout a slot brings, the way to the next slot is always here.
+export function slotsModel(status, state, conn, lang) {
+  if (conn !== 'connected' || !status) return null;
+  const items = [];
+  for (let k = 0; k < SLOT_COUNT; k++) {
+    const name = typeof state?.[`slot.${k}.name`] === 'string' ? state[`slot.${k}.name`] : '';
+    const has = !!(status.slotMask & (1 << k));
+    const label = name || t(lang, 'slot.default', { n: k + 1 });
+    items.push({ k, n: k + 1, name, label, title: name ? `${k + 1} · ${name}` : label, has, active: status.slot === k, hint: t(lang, has ? 'slot.has' : 'slot.empty') });
+  }
+  const cur = items[Math.min(status.slot, SLOT_COUNT - 1)];
+  return { title: t(lang, 'slot.title'), change: t(lang, 'slot.change'), items, active: status.slot, current: t(lang, 'slot.current', { n: cur.n }) + (cur.name ? ` · ${cur.name}` : '') };
 }

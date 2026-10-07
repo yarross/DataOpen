@@ -64,9 +64,22 @@ class SimServer:
     def __init__(self, root: Path, world) -> None:
         self.root, self.world = root.resolve(), world
         self.clients: list[asyncio.StreamWriter] = []
-        gw = world.gw
+        self.bind(world.gw)
+        world.restart_hooks.append(self.rebind)
+
+    def bind(self, gw) -> None:
         gw.notify = lambda c: self.broadcast(CH_CTL, c)
         gw.notify_status = lambda b: self.broadcast(CH_STATUS, b)
+
+    def rebind(self, gw) -> None:
+        """The gateway was swapped for a fresh one (an update was applied): the old links are gone, as on a device that rebooted."""
+        self.bind(gw)
+        for w in list(self.clients):
+            try:
+                w.close()
+            except (ConnectionError, RuntimeError):
+                pass
+        self.clients.clear()
 
     def broadcast(self, ch: int, data: bytes) -> None:
         for w in list(self.clients):
@@ -126,11 +139,15 @@ class SimServer:
         """Test hooks of the simulated rig: what the bridge is doing, and the hand's panic button."""
         wd = self.world
         if target == "/sim/bridge":
-            b = wd.bridge()
+            b, gw = wd.bridge(), wd.gw
             out = {"state": STATE[b.state], "reason": REASONS[b.reason], "params_rejected": b.params_rejected,
-                   "invariant_viol": b.invariant_viol, "assist_wanted": wd.gw.settings.assist_wanted,
-                   "strength": wd.gw.settings.strength, "tremor": wd.gw.settings.tremor,
-                   "trial": wd.gw.trial is not None, "calibrating": wd.gw.calibrating}
+                   "invariant_viol": b.invariant_viol, "assist_wanted": gw.settings.assist_wanted,
+                   "strength": gw.settings.strength, "tremor": gw.settings.tremor,
+                   "trial": gw.trial is not None, "calibrating": gw.calibrating,
+                   "slot": gw.active, "slots": [s.has for s in gw.slotset], "names": [s.name for s in gw.slotset],
+                   "leds": [int(x) for x in gw.leds()], "led_mode": gw.led_mode(),
+                   "fw": None if gw.fw is None else {"running": gw.fw.running, "active": gw.fw.active, "trial": gw.fw.trial,
+                                                      "boots": gw.fw.boots, "version": gw._fw_version(), "reboots": list(wd.reboots)}}
         elif target.startswith("/sim/panic/"):
             wd.rig.panic(True)
             wd.run(int(target.rsplit("/", 1)[1]))
@@ -139,6 +156,19 @@ class SimServer:
         elif target == "/sim/button":
             wd.gw.physical_press()
             out = {"ok": True}
+        elif target.startswith("/sim/press/"):                    # /sim/press/<slot|confirm>[/<ms>]: the front panel, held for a while
+            parts = target.split("/")
+            ms = float(parts[4]) if len(parts) > 4 else 100.0
+            wd.press(parts[3], ms)
+            out = {"ok": True}
+        elif target.startswith("/sim/image/"):
+            # /sim/image/<version>[/<min_version>]: an update image signed by the simulation's TEST manufacturer
+            from .sim import dev_image
+            parts = target.split("/")
+            data = dev_image(int(parts[3]), int(parts[4]) if len(parts) > 4 else None)
+            head = f"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {len(data)}\r\nConnection: close\r\n\r\n"
+            w.write(head.encode() + data)
+            return
         else:
             w.write(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
             return
@@ -169,7 +199,7 @@ class SimServer:
 
 
 def serve_sim(a) -> int:
-    from .sim import SimLearner, World, seed_profile
+    from .sim import SimLearner, World, dev_image, dev_vendor, seed_profile
     root = Path(a.root) if a.root else Path(__file__).resolve().parents[3] / "pwa"
     if not (root / "index.html").exists():
         print(f"error: no PWA at {root} (use --root)")
@@ -177,7 +207,8 @@ def serve_sim(a) -> int:
     d = a.dir or tempfile.mkdtemp(prefix="dataopen-ctl-")
     if a.profile != "none":
         seed_profile(d, a.profile)
-    world = World(d, learner=SimLearner(minutes=5.0, seed=2, speed=240.0), trial_s=getattr(a, "trial_s", 20) or 20)
+    world = World(d, learner=SimLearner(minutes=5.0, seed=2, speed=240.0), trial_s=getattr(a, "trial_s", 20) or 20,
+                  vendor_pub=dev_vendor()[1], factory_image=dev_image(1, 1), fw_confirm_s=4)
     srv = SimServer(root, world)
 
     async def main() -> None:

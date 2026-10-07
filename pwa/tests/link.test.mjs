@@ -102,7 +102,9 @@ test('status layout: Python bytes in, the same fields out, and back', () => {
     assert.equal(u.ready, s.ready);
     assert.equal(u.stateRev, s.state_rev);
     assert.equal(u.manifestRev, s.manifest_rev);
-    assert.equal(u.uptimeS, s.uptime_s);
+    assert.equal(u.uptimeMin, s.uptime_min);
+    assert.equal(u.slot, s.slot);
+    assert.equal(u.slotMask, s.slot_mask);
     assert.equal(u.trialLeftS, s.trial_left_s);
     assert.equal(u.strength, s.strength);
     assert.equal(u.tremor, s.tremor);

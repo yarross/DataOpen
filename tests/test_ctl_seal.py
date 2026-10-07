@@ -240,9 +240,12 @@ def test_garbage_never_crashes_the_opener(pair, profile):
     for _ in range(600):
         x = bytearray(raw)
         for _ in range(rng.randrange(1, 6)):
-            x[rng.randrange(len(x))] = rng.randrange(256)
+            i = rng.randrange(len(x))
+            x[i] = (x[i] + rng.randrange(1, 256)) % 256                 # a byte that really changes
         if rng.random() < 0.3:
             x = x[: rng.randrange(len(x))]
+        if bytes(x) == raw:                                             # two edits of one byte can cancel out: that is no mutation
+            continue
         with pytest.raises(S.SealError):
             S.open_sealed(bytes(x), b)
     for _ in range(300):

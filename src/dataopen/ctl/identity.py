@@ -86,6 +86,8 @@ class Card:
     label: str = ""
     created: str = ""
     sig: bytes = b""
+    # the manufacturer's chain (docs/PROVISIONING.md); NOT part of the self-signature, checked separately
+    device: Optional[dict] = None
 
     @property
     def digest(self) -> bytes:
@@ -108,8 +110,11 @@ class Card:
             return False
 
     def to_json(self) -> dict:
-        return {"v": CARD_VERSION, "ed": _b64(self.ed), "x": _b64(self.x), "id": self.id, "label": self.label,
-                "created": self.created, "sig": _b64(self.sig)}
+        out = {"v": CARD_VERSION, "ed": _b64(self.ed), "x": _b64(self.x), "id": self.id, "label": self.label,
+               "created": self.created, "sig": _b64(self.sig)}
+        if self.device is not None:
+            out["device"] = self.device
+        return out
 
     @staticmethod
     def from_json(o) -> "Card":
@@ -122,7 +127,10 @@ class Card:
         label, created = o.get("label", ""), o.get("created", "")
         if not isinstance(label, str) or not isinstance(created, str) or len(label) > 40 or len(created) > 10:
             raise CardError("bad label or date")
-        c = Card(_unb64(o["ed"], 32, "ed"), _unb64(o["x"], 32, "x"), label, created, _unb64(o["sig"], 64, "sig"))
+        device = o.get("device")
+        if device is not None and (not isinstance(device, dict) or len(json.dumps(device)) > 2048):
+            raise CardError("bad device block")
+        c = Card(_unb64(o["ed"], 32, "ed"), _unb64(o["x"], 32, "x"), label, created, _unb64(o["sig"], 64, "sig"), device)
         if o["id"] != c.id:
             raise CardError("the ID does not match the keys")
         if not c.verify():
@@ -179,6 +187,7 @@ class Identity:
         self.x_pub = self._x.public_key().public_bytes(*raw)
         self.storage_key = base64.b64decode(d["storage"])
         self.created = d.get("created", "")
+        self.device: Optional[dict] = None   # set by the gateway when the device was provisioned: the DAK certificate for THIS card
         self.export_seq = int(d.get("seq", 0))
         ep = d.get("epochs")
         self.slot_epochs = [int(x) for x in ep] if isinstance(ep, list) and all(isinstance(x, int) and x >= 0 for x in ep) else []
@@ -196,7 +205,7 @@ class Identity:
 
     def card(self, label: str = "DataOpen") -> Card:
         c = Card(self.ed_pub, self.x_pub, label, self.created)
-        return Card(c.ed, c.x, c.label, c.created, self.sign(b"DOCARD1" + c._body()))
+        return Card(c.ed, c.x, c.label, c.created, self.sign(b"DOCARD1" + c._body()), self.device)
 
     # -- state that must survive restarts
     def _dump(self) -> dict:

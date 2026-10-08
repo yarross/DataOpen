@@ -205,6 +205,10 @@ def serve_sim(a) -> int:
         print(f"error: no PWA at {root} (use --root)")
         return 1
     d = a.dir or tempfile.mkdtemp(prefix="dataopen-ctl-")
+    # a provisioned device (serial, device key, attestation) made by the TEST manufacturer
+    if not (Path(d) / "otp" / "otp.json").exists():
+        from ..provisioning import station as ST
+        ST.provision(d, ST.VendorHsm(dev_vendor()[0]), jig=ST.SkipJig())
     if a.profile != "none":
         seed_profile(d, a.profile)
     world = World(d, learner=SimLearner(minutes=5.0, seed=2, speed=240.0), trial_s=getattr(a, "trial_s", 20) or 20,

@@ -29,6 +29,17 @@ async function open() {
 }
 const press = (name, ms) => fetch(`${base}sim/press/${name}/${ms ?? 100}`);
 
+test('the device shows the serial number of its label and a card carrying the manufacturer\'s chain', { skip }, async () => {
+  const s = await open();
+  assert.match(s.state['device.serial'], /^DO[1-9]-\d{4}-\d{5}-[0-9A-Z]$/);
+  const card = await s.getIdentity();
+  assert.equal(typeof card.device.att.serial, 'string');
+  assert.equal(card.device.att.serial, s.state['device.serial']);
+  assert.deepEqual(Object.keys(card.device).sort(), ['att', 'sig']);           // public parts only: no key of the device ever appears
+  assert.ok(!JSON.stringify(card).includes('storage'));
+  s.close();
+});
+
 test('the phone picks a slot; the device says so in the status, the state and its LEDs', { skip }, async () => {
   const s = await open();
   await s.selectSlot(0);

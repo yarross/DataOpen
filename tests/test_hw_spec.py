@@ -94,4 +94,4 @@ def test_the_generated_tables_exist_for_every_name_and_render():
 def test_the_documented_enclosure_fits_the_numbers_used_for_cooling():
     x, y, z = S.ENCLOSURE["size_mm"]
     assert (x, y, z) == (100, 75, 26)
-    assert {f.name for f in S.FACES} == {"top", "mouse-end", "pc-end", "monitor-side"}
+    assert {f.name for f in S.FACES} == {"top", "mouse-end", "pc-end", "monitor-side", "bottom"}

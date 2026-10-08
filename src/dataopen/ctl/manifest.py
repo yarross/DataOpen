@@ -97,7 +97,10 @@ def default_manifest(rev: int = 1) -> dict:
                            "Assistance turns off. You will need to press the button on the device.")},
             ]},
             {"id": "more", "title": L("Ещё", "More"), "controls": [
-                {"id": "device_id", "type": "status", "key": "device.id", "label": L("Номер устройства", "Device number")},
+                {"id": "serial", "type": "status", "key": "device.serial", "label": L("Серийный номер (как на наклейке)",
+                                                                             "Serial number (as on the label)")},
+                {"id": "device_id", "type": "status", "key": "device.id", "label": L("Номер владельца (меняется заводским сбросом)",
+                                                                                "Owner number (changes with a factory reset)")},
                 {"id": "trusted", "type": "status", "key": "trusted.count",
                  "label": L("Откуда принимаются файлы (кроме своих копий)",
                             "Where files are accepted from (besides your own copies)")},
@@ -139,10 +142,12 @@ def default_manifest(rev: int = 1) -> dict:
                            "You will need to press the button on the device. Holding the confirm button for 10 seconds does the same.")},
                 {"id": "factory", "type": "action", "key": "factory.reset", "confirm": "two-step", "danger": True,
                  "label": L("Заводской сброс", "Factory reset"),
-                 "help": L("То же, и устройство получит новый номер: все файлы, сделанные для него, перестанут открываться. "
-                           "Нужна кнопка на устройстве. То же делает удержание кнопки подтверждения 20 секунд.",
-                           "The same, and the device gets a new number: every file made for it stops opening. "
-                           "You will need the button on the device. Holding the confirm button for 20 seconds does the same.")},
+                 "help": L("То же, и новый номер владельца (серийный остаётся): старые файлы не откроются, "
+                           "телефоны забываются. Прошивка не меняется. "
+                           "Нужна кнопка на устройстве или удержание CONFIRM 20 с.",
+                           "The same, plus a new owner number (the serial stays): old files stop opening, "
+                           "phones are forgotten. The firmware stays. "
+                           "Needs the button on the device, or holding CONFIRM for 20 s.")},
             ]},
         ],
     }

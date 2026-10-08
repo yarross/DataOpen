@@ -60,6 +60,9 @@ PARTS: tuple[Part, ...] = (
     P("D1", "RGB status LED + driver", CORE, 1, 0.4, 0.8, port="STATUS LED"),
     P("D2", "BYPASS amber LED, driven by the safety domain (no firmware)", CORE, 1, 0.1, 0.2, port="BYPASS LED"),
     P("D3", "Slot LEDs, 4 pieces", CORE, 4, 0.1, 0.2, port="SLOT LEDS"),
+    P("SW5", "RECOVERY: recessed pushbutton (a paper clip), holds the SoM boot-ROM pin while power is applied", CORE, 1, 0.1, 0.2, port="RECOVERY"),
+    P("E4", "ESD and series resistors for the service data lines of the POWER port (to the SoM USB OTG; unused in normal operation)", CORE, 1, 0.3, 0.6),
+    P("TP1", "Pad field for the factory jig (pogo pins); the debug port is fused off at the end of provisioning", CORE, 1, 0.3, 0.8),
     # ---- board, enclosure, box
     P("PCB", "6-layer board, about 90 x 60 mm", CORE, 1, 8, 14),
     P("MSC", "Passives, ESD arrays, connectors of the SoM, fuses", CORE, 1, 6, 10),
@@ -149,12 +152,13 @@ class Face:
 
 
 FACES = (Face("top", 100, "верх: органы управления и индикация", rows=3), Face("mouse-end", 75, "торец со стороны мыши"),
-         Face("pc-end", 75, "торец со стороны ПК"), Face("monitor-side", 100, "боковая грань к монитору"))
+         Face("pc-end", 75, "торец со стороны ПК"), Face("monitor-side", 100, "боковая грань к монитору"),
+         Face("bottom", 100, "низ: утопленная кнопка RECOVERY, наклейка с серийным номером и QR", rows=2))
 PORT_FACE = {"POWER": "monitor-side", "TO PC": "pc-end", "HDMI IN": "pc-end", "DP IN": "pc-end", "HDMI OUT": "monitor-side", "DP OUT": "monitor-side",
              "MOUSE A": "mouse-end", "MOUSE C": "mouse-end", "EXT BUTTON": "mouse-end", "PANIC": "top", "MODE": "top", "SLOT": "top",
-             "CONFIRM": "top", "STATUS LED": "top", "BYPASS LED": "top", "SLOT LEDS": "top", "BUZZER": "top"}
+             "CONFIRM": "top", "RECOVERY": "bottom", "STATUS LED": "top", "BYPASS LED": "top", "SLOT LEDS": "top", "BUZZER": "top"}
 PORT_MM = {"POWER": 10, "TO PC": 10, "HDMI IN": 16, "DP IN": 19, "HDMI OUT": 16, "DP OUT": 19, "MOUSE A": 16, "MOUSE C": 10, "EXT BUTTON": 8,
-           "PANIC": 34, "MODE": 14, "SLOT": 8, "CONFIRM": 8, "STATUS LED": 6, "BYPASS LED": 4, "SLOT LEDS": 24, "BUZZER": 3}
+           "PANIC": 34, "MODE": 14, "SLOT": 8, "CONFIRM": 8, "RECOVERY": 6, "STATUS LED": 6, "BYPASS LED": 4, "SLOT LEDS": 24, "BUZZER": 3}
 GAP_MM = 6.0
 ENCLOSURE = {"size_mm": (100, 75, 26), "material": "алюминиевый экструдированный профиль 6063 + торцевые крышки из PC/ABS, светопроводы из PC",
              "ingress": "IP20 (не герметичен)", "mass_g": "ориентир 220-280", "cooling": "пассивное: корпус это радиатор, термопрокладка от SoM"}
@@ -196,7 +200,8 @@ LINKS = (
     ("PC", "K2", "VBUS sense / pass-through when released"), ("K2", "MOUSE", "VBUS"),
     ("GPU", "KV", "TMDS / DP"), ("KV", "MONITOR", "direct when released"), ("KV", "VIDEO_TAP", "through the splitter when engaged"),
     ("VIDEO_TAP", "MONITOR", "monitor branch"), ("VIDEO_TAP", "SOM", "MIPI CSI-2"),
-    ("MCU", "SOM", "BridgeLink SPI + DRDY"), ("SOM", "BLE", "HCI"), ("PHONE", "BLE", "GATT / CtlLink"), ("SOM", "RGB", "pattern"),
+    ("MCU", "SOM", "BridgeLink SPI + DRDY"), ("SOM", "MCU", "ISP: BOOT / RESET / UART (the SoM re-flashes the MCU)"),
+    ("PWR_IN", "SOM", "service USB data lines (recovery only; unused in normal operation)"), ("SOM", "BLE", "HCI"), ("PHONE", "BLE", "GATT / CtlLink"), ("SOM", "RGB", "pattern"),
     ("SOM", "SLOT_LEDS", "pattern"), ("SOM", "BUZZER", "pattern"), ("BTN_SOFT", "SOM", "SLOT / CONFIRM"),
 )
 

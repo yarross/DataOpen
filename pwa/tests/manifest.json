@@ -263,12 +263,21 @@
       },
       "controls": [
         {
+          "id": "serial",
+          "type": "status",
+          "key": "device.serial",
+          "label": {
+            "ru": "Серийный номер (как на наклейке)",
+            "en": "Serial number (as on the label)"
+          }
+        },
+        {
           "id": "device_id",
           "type": "status",
           "key": "device.id",
           "label": {
-            "ru": "Номер устройства",
-            "en": "Device number"
+            "ru": "Номер владельца (меняется заводским сбросом)",
+            "en": "Owner number (changes with a factory reset)"
           }
         },
         {
@@ -415,8 +424,8 @@
             "en": "Factory reset"
           },
           "help": {
-            "ru": "То же, и устройство получит новый номер: все файлы, сделанные для него, перестанут открываться. Нужна кнопка на устройстве. То же делает удержание кнопки подтверждения 20 секунд.",
-            "en": "The same, and the device gets a new number: every file made for it stops opening. You will need the button on the device. Holding the confirm button for 20 seconds does the same."
+            "ru": "То же, и новый номер владельца (серийный остаётся): старые файлы не откроются, телефоны забываются. Прошивка не меняется. Нужна кнопка на устройстве или удержание CONFIRM 20 с.",
+            "en": "The same, plus a new owner number (the serial stays): old files stop opening, phones are forgotten. The firmware stays. Needs the button on the device, or holding CONFIRM for 20 s."
           }
         }
       ]

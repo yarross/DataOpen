@@ -77,4 +77,4 @@ def test_every_reason_in_every_mode_gives_a_known_state(reason, mode):
 
 
 def test_hold_priority_list_is_a_permutation_with_off_first_and_error_next():
-    assert I.PRIORITY[:3] == ("OFF", "ERROR", "BYPASS") and len(set(I.PRIORITY)) == len(I.PRIORITY)
+    assert I.PRIORITY[:4] == ("OFF", "RECOVERY", "ERROR", "BYPASS") and len(set(I.PRIORITY)) == len(I.PRIORITY)

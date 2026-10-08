@@ -160,7 +160,9 @@ test('the device card: public, signed, the same ID everywhere', { skip }, async 
   assert.match(card.id, /^[0-9A-Z]{4}(-[0-9A-Z]{4}){3}$/);
   assert.equal(card.id, s.hello.device);
   assert.equal(card.id, s.state['device.id']);
-  assert.deepEqual(Object.keys(card).sort(), ['created', 'ed', 'id', 'label', 'sig', 'v', 'x']);
+  // 'device' is the manufacturer's chain (serial, attestation, signature of the secure element): the simulator provisions itself
+  assert.deepEqual(Object.keys(card).sort(), ['created', 'device', 'ed', 'id', 'label', 'sig', 'v', 'x']);
+  assert.match(card.device.att.serial, /^DO[1-9]-\d{4}-\d{5}-[0-9A-Z]$/);
   assert.ok(!JSON.stringify(card).includes('storage'));
   s.close();
 });

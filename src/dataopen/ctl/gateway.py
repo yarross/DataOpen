@@ -90,7 +90,7 @@ class Gateway:
                  cmd_period_us: int = 1_000_000, status_period_us: int = 250_000, on_forget: Callable[[], None] = lambda: None,
                  chunk_cap: int = P.CHUNK_DEFAULT, vendor_pub: Optional[bytes] = None, hw_id: bytes = b"DOHW0001",
                  factory_image: Optional[bytes] = None, fw_confirm_s: int = 10,
-                 on_reboot: Callable[[str], None] = lambda why: None) -> None:
+                 on_reboot: Callable[[str], None] = lambda why: None, require_attested: bool = False) -> None:
         self.dir = Path(directory)
         self.dir.mkdir(parents=True, exist_ok=True)
         self.spi, self.notify, self.notify_status = spi, notify, notify_status
@@ -99,6 +99,10 @@ class Gateway:
         self.allow_plain_import = allow_plain_import
         self.keystore = keystore or FileKeyStore(self.dir / "keys" / "keys.json")
         self.identity = load_identity(self.keystore)
+        self.vendor_pub, self.hw_id, self.require_attested = vendor_pub, hw_id, require_attested
+        # the factory record, when this device was provisioned (docs/PROVISIONING.md)
+        self.device = self._open_device()
+        self._attach_device()
         self.vault = Vault(self.identity.storage_key)
         self.trial_s = trial_s
         self.spi_period_us, self.params_period_us, self.cmd_period_us, self.status_period_us = (
@@ -170,6 +174,28 @@ class Gateway:
         self.bad_messages = 0
         self.last_error = ""
         self._publish(self.clock(), force_status=True)
+
+    # ------------------------------------------------------------------------------------------------------ factory identity
+    def _open_device(self):
+        if self.vendor_pub is None or not (self.dir / "otp" / "otp.json").exists():
+            return None
+        from ..provisioning.device import DeviceAgent
+        agent = DeviceAgent(self.dir, hw_id=self.hw_id, vendor_pub=self.vendor_pub)
+        return agent if agent.record is not None else None
+
+    def _attach_device(self) -> None:
+        """The card this device shows carries the manufacturer's chain for ITS CURRENT owner keys: the secure element
+        signs it again whenever they change."""
+        if self.device is None:
+            self.identity.device = None
+            return
+        self.identity.device = self.device.cert(self.identity.digest).to_json()
+        self.device.first_boot()
+
+    @property
+    def device_serial(self) -> str:
+        rec = self.device.record if self.device is not None else None
+        return rec.serial if rec is not None else ""
 
     # ------------------------------------------------------------------------------------------------------ persistence
     def _open_stores(self) -> None:
@@ -510,7 +536,8 @@ class Gateway:
         layers = "both" if pr.asc_ready and pr.tremor_ready else "asc" if pr.asc_ready else "tremor" if pr.tremor_ready else "none"
         return {"assist.on": self.settings.assist_wanted, "assist.strength": self.settings.strength, "tremor.level": self.settings.tremor,
                 "calib.running": self.calibrating, "profile.fill": pr.fill, "profile.layers": layers, "profile.tremor": pr.tremor,
-                "device.id": self.identity.id, "trusted.count": len(self.trust["senders"]), "trial.left_s": self._trial_left(now),
+                "device.id": self.identity.id, "device.serial": self.device_serial, "trusted.count": len(self.trust["senders"]),
+                "trial.left_s": self._trial_left(now),
                 "pairing.open": now < self.pairing_until, "slot.active": self.active, "slot.name": self.slot.name,
                 **{f"slot.{s.k}.name": s.name for s in self.slotset},
                 "fw.version": self._fw_version(), "fw.state": self._fw_state()}
@@ -839,6 +866,15 @@ class Gateway:
             except CardError as e:
                 raise _Refuse(P.E.BAD_BUNDLE, "card") from e
         if card.digest != self.identity.digest:
+            # a card nobody vouches for may be a page's invention: no file is made for it
+            if self.require_attested:
+                from ..provisioning.records import RecordError, verify_chain
+                try:
+                    if self.vendor_pub is None:
+                        raise RecordError("binding")
+                    verify_chain(card, self.vendor_pub, self.hw_id)
+                except RecordError:
+                    raise _Refuse(P.E.BAD_BUNDLE, "card_unattested") from None
             self._need_button(now, f"export:{card.id}")
         meta = {"name": "DataOpen", "created": time.strftime("%Y-%m-%d", time.gmtime())}
         if scope == "all" and any(s.used for s in self.slotset):
@@ -958,6 +994,8 @@ class Gateway:
         shutil.rmtree(self.dir / "slots", ignore_errors=True)
         if factory:
             self.identity = provision(self.keystore)
+            self._attach_device()                                    # same serial, same DAK, a new owner card signed by it
+            self.on_forget()                                         # and the paired phones are forgotten
         else:
             self.identity.rotate_storage_key()
         self.vault = Vault(self.identity.storage_key)

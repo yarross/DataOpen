@@ -182,7 +182,7 @@ check('the meter and the calibration switch work', async () => {
 
 check('the device card and a copy for this device are saved to the phone, and the copy loads back', async () => {
   await tapBtn('Ещё');
-  const idText = await page.locator('.control', { hasText: 'Номер устройства' }).innerText();
+  const idText = await page.locator('.control', { hasText: 'Номер владельца (меняется' }).innerText();
   const id = idText.match(/[0-9A-Z]{4}(-[0-9A-Z]{4}){3}/)[0];
   const dlCard = page.waitForEvent('download');
   await tapBtn('Сохранить карточку устройства');

@@ -43,6 +43,8 @@ STATES = (
     State("PAIRING", "blue", _blinks(2, 100, 100, 700), beep="pair", ru="синий, две быстрые вспышки и пауза: можно подключить телефон"),
     State("OTA", "violet", _blinks(3, 120, 120, 800), beep="ota", ru="фиолетовый, три вспышки и пауза: идёт обновление"),
     State("TRIAL", "cyan", ((1, 250), (0, 250)), ru="голубой, быстро мигает: идёт проба, нажмите «Оставить» или «Вернуть»"),
+    State("RECOVERY", "magenta", ((1, 600), (0, 150), (1, 100), (0, 150), (1, 100), (0, 900)), beep="recovery",
+          ru="пурпурный, одна длинная и две короткие вспышки: система восстановления, мышь и экран напрямую, нажмите CONFIRM, чтобы восстановить прошивку"),
     State("ERROR", "red", ((1, 100), (0, 100)), beep="error", ru="красный, часто мигает и три сигнала: ошибка, мышь при этом напрямую или без помощи"),
 )
 BY_KEY = {s.key: s for s in STATES}
@@ -53,6 +55,7 @@ BEEPS = {
     "pair": ((1760, 80),),                                       # one short high tone
     "ota": ((880, 80), (0, 60), (1320, 80)),                     # two rising tones: an update is being applied
     "error": ((1320, 90), (0, 90), (1320, 90), (0, 90), (1320, 90)),
+    "recovery": ((660, 120), (0, 80), (660, 120), (0, 80), (990, 200)),      # the device entered the recovery system
     "tick": ((2400, 15),),                                       # a button press was accepted
 }
 MAX_BEEP_MS = 1000
@@ -64,14 +67,16 @@ REASON_STATE = {
     "CMD_BYPASS": "BYPASS", "STALE_PARAMS": "DEGRADED", "STALE_LINK": "DEGRADED", "INVARIANT": "ERROR", "OVERRUN": "ERROR",
     "SLOW_MOUSE": "DEGRADED", "CRASHLOOP": "ERROR", "FATAL": "ERROR", "ENGAGE_FAILED": "ERROR", "WAIT_PC": "STARTING", "IMAGE_TIMEOUT": "ERROR",
 }
-PRIORITY = ("OFF", "ERROR", "BYPASS", "OTA", "PAIRING", "CALIBRATING", "TRIAL", "NO_MOUSE", "DEGRADED", "STARTING", "ACTIVE", "READY")
+PRIORITY = ("OFF", "RECOVERY", "ERROR", "BYPASS", "OTA", "PAIRING", "CALIBRATING", "TRIAL", "NO_MOUSE", "DEGRADED", "STARTING", "ACTIVE", "READY")
 
 
 def indicate(status: Optional[P.StatusSnapshot], *, powered: bool = True, upload: bool = False, fw_state: str = "current",
-             pairing: bool = False, both_mice: bool = False) -> str:
+             pairing: bool = False, both_mice: bool = False, recovery: bool = False) -> str:
     """The state key for the status LED. `status` is the 20-byte snapshot the phone also sees; the rest is what the gateway knows."""
     if not powered:
         return "OFF"
+    if recovery:                                                 # the recovery system is running: that is what the person needs to know
+        return "RECOVERY"
     if both_mice:
         return "ERROR"
     if status is None or not status.bridge or status.mode == P.MODE_UNKNOWN:

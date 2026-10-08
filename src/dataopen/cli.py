@@ -386,6 +386,8 @@ def build_parser() -> argparse.ArgumentParser:
     register_ctl(sub)
     from .hw.cli import register as register_hw
     register_hw(sub)
+    from .provisioning.cli import register as register_prov
+    register_prov(sub)
     return p
 
 

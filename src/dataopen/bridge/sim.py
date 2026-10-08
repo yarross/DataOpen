@@ -188,6 +188,8 @@ class Rig:
         self.pc_conn: Optional[str] = None
         self.pc_ready_at: Optional[int] = None
         self.pc_reports: list[tuple] = []
+        self.report_delay_us: list[int] = []  # per routed report: time from `move()` to the step that handled it (docs/LATENCY.md)
+        self._enq: dict[int, list[int]] = {}
         self.transcripts: dict[str, list] = {}
         self.front = BridgeFront(self)
         self.module = SimModule(self, asc, tremor, ppc, scene_fn=scene_fn) if module else None
@@ -203,6 +205,7 @@ class Rig:
     # -- the world
     def plug(self, mouse: SimMouse) -> None:
         self.mouse = mouse
+        self._enq.clear()
         self.b.set_speed(2 if mouse.speed == "HS" else 1)
         self.b.dev_present(self.t, True)
         self.pc_conn = None
@@ -211,6 +214,7 @@ class Rig:
 
     def unplug(self) -> None:
         self.mouse = None
+        self._enq.clear()
         self.b.dev_present(self.t, False)
         self.pc_conn = None
         self.pc_ready_at = None
@@ -323,11 +327,15 @@ class Rig:
                     r = self.mouse.pop_in(ep)
                     if r is None:
                         break
+                    q = self._enq.get(ep)
+                    t_enq = q.pop(0) if q else t  # a report put in by someone else than move(): no stamp, no delay
                     if self.pc_conn == "bridge" and self.route == "bridge" and self.alive:
                         out, _ = self.b.mouse_in(t, ep, r)
                         self.pc_reports.append((t, "bridge", ep, out, r))
+                        self.report_delay_us.append(t - t_enq)
                     elif self.pc_conn == "direct" and self.route == "bypass":
                         self.pc_reports.append((t, "direct", ep, r, r))
+                        self.report_delay_us.append(t - t_enq)
                     else:
                         self.dropped += 1
         self.t += self.step_us
@@ -360,7 +368,9 @@ class Rig:
 
     # -- the person
     def move(self, dx: int, dy: int, buttons: int = 0, wheel: int = 0, pan: int = 0, ep: Optional[int] = None) -> None:
-        self.mouse.push_in(ep or self.mouse.motion_ep, self.mouse.pack(buttons, dx, dy, wheel, pan))
+        ep = ep or self.mouse.motion_ep
+        self.mouse.push_in(ep, self.mouse.pack(buttons, dx, dy, wheel, pan))
+        self._enq.setdefault(ep, []).append(self.t)
 
 
 @dataclass

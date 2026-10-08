@@ -166,6 +166,7 @@ class Gateway:
         self.live_progress: Optional[Progress] = None
         self.next_live = 0
         self.physical_until = -1
+        self.pairing_until = -1
         self.bad_messages = 0
         self.last_error = ""
         self._publish(self.clock(), force_status=True)
@@ -510,7 +511,8 @@ class Gateway:
         return {"assist.on": self.settings.assist_wanted, "assist.strength": self.settings.strength, "tremor.level": self.settings.tremor,
                 "calib.running": self.calibrating, "profile.fill": pr.fill, "profile.layers": layers, "profile.tremor": pr.tremor,
                 "device.id": self.identity.id, "trusted.count": len(self.trust["senders"]), "trial.left_s": self._trial_left(now),
-                "slot.active": self.active, "slot.name": self.slot.name, **{f"slot.{s.k}.name": s.name for s in self.slotset},
+                "pairing.open": now < self.pairing_until, "slot.active": self.active, "slot.name": self.slot.name,
+                **{f"slot.{s.k}.name": s.name for s in self.slotset},
                 "fw.version": self._fw_version(), "fw.state": self._fw_state()}
 
     def _fw_version(self) -> int:
@@ -624,6 +626,8 @@ class Gateway:
                     self._send_cmd(self._cmd_now(), now)
                 else:
                     self.physical_press(now)
+            elif ev == PN.PAIR:
+                self.pairing_until = now + PN.PAIR_WINDOW_US            # the phone may bond now (the BlueZ side is not written: state only)
             elif ev in (PN.ERASE, PN.FACTORY):
                 self._erase(now, factory=ev == PN.FACTORY)
         except _Refuse:
@@ -639,6 +643,8 @@ class Gateway:
             return warn
         if self.trial is not None:
             return PN.M_TRIAL
+        if now < self.pairing_until:
+            return PN.M_PAIR
         if now <= self.physical_until:
             return PN.M_WINDOW
         return PN.M_CALIB if self.calibrating else PN.M_STEADY

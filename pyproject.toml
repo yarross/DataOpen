@@ -40,3 +40,4 @@ ignore = ["E741", "B905", "B008", "B027"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["E702"]
+"src/dataopen/hw/*" = ["E501"]          # specification tables with prose in the data lines

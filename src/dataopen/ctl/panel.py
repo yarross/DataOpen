@@ -5,7 +5,8 @@ the logic (what a press means, how long a hold must be, what the LEDs say) is wh
   CONFIRM button  a short press is 'the person is here': it keeps a running trial, or else opens the 30 s window in which the actions that
                   need the device's own button (erase, forget phones, export for another device, accept from a new sender, apply an update)
                   are allowed. Held 10 s and released: erase all personal data. Held 20 s and released: factory reset (new identity).
-                  Released earlier than 10 s but not a short press: nothing happens (that is how a hold is cancelled).
+                  Held 3 s and released before 10 s: the pairing window (the phone may bond) for 120 s.
+                  Released between 2 s and 3 s: nothing happens (that is how a hold is cancelled).
   LEDs            one per slot. Steady: the active slot. Blinking: a trial is running. All breathing slowly: the confirm window is open.
                   At 10 s of holding CONFIRM all blink fast ('release now to erase'); at 20 s they flicker ('release now for a
                   factory reset').
@@ -19,14 +20,17 @@ from typing import Optional
 
 DEBOUNCE_US = 30_000
 SHORT_MAX_US = 2_000_000
+PAIR_US = 3_000_000
+PAIR_WINDOW_US = 120_000_000
 ERASE_US = 10_000_000
 FACTORY_US = 20_000_000
 
 BUTTONS = ("slot", "confirm")
 # what a release means
-SLOT_NEXT, CONFIRM_SHORT, ERASE, FACTORY = "slot_next", "confirm_short", "erase", "factory"
+SLOT_NEXT, CONFIRM_SHORT, ERASE, FACTORY, PAIR = "slot_next", "confirm_short", "erase", "factory", "pair"
 # LED modes, highest priority first
-M_ERROR, M_FACTORY, M_ERASE, M_TRIAL, M_WINDOW, M_CALIB, M_STEADY = "error", "factory", "erase", "trial", "window", "calibrating", "steady"
+M_ERROR, M_FACTORY, M_ERASE, M_TRIAL = "error", "factory", "erase", "trial"
+M_PAIR, M_WINDOW, M_CALIB, M_STEADY = "pairing", "window", "calibrating", "steady"
 
 
 class Panel:
@@ -53,6 +57,8 @@ class Panel:
             return FACTORY
         if held >= ERASE_US:
             return ERASE
+        if held >= PAIR_US:
+            return PAIR
         return CONFIRM_SHORT if held <= SHORT_MAX_US else None
 
     def held_us(self, button: str, now: int) -> int:
@@ -75,5 +81,8 @@ def leds(mode: str, active: int, now: int, count: int = 4) -> tuple[bool, ...]:
         return (True,) * count if (ms // 200) % 2 == 0 else (False,) * count
     if mode == M_WINDOW:
         return (True,) * count if (ms // 500) % 2 == 0 else (False,) * count
+    if mode == M_PAIR:                                             # the active slot's LED flashes twice, then rests
+        on = (ms % 1000) < 100 or 200 <= (ms % 1000) < 300
+        return tuple(on and i == active for i in range(count))
     on = (ms // 250) % 2 == 0 if mode == M_TRIAL else (ms // 1000) % 2 == 0 if mode == M_CALIB else True
     return tuple(on and i == active for i in range(count))

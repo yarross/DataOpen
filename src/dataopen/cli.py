@@ -384,6 +384,8 @@ def build_parser() -> argparse.ArgumentParser:
     register_ui(sub)
     from .ctl.cli import register as register_ctl
     register_ctl(sub)
+    from .hw.cli import register as register_hw
+    register_hw(sub)
     return p
 
 

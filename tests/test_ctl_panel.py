@@ -32,7 +32,8 @@ def test_the_slot_button_is_short_press_only():
 
 
 def test_the_confirm_button_by_how_long_it_was_held():
-    cases = [(0.1, PN.CONFIRM_SHORT), (1.9, PN.CONFIRM_SHORT), (2.5, None), (9.9, None), (10.0, PN.ERASE), (19.9, PN.ERASE),
+    cases = [(0.1, PN.CONFIRM_SHORT), (1.9, PN.CONFIRM_SHORT), (2.5, None), (2.99, None), (3.0, PN.PAIR), (9.9, PN.PAIR), (10.0, PN.ERASE),
+             (19.9, PN.ERASE),
              (20.0, PN.FACTORY), (60.0, PN.FACTORY)]
     for secs, want in cases:
         p = PN.Panel()
@@ -60,9 +61,9 @@ def test_press_twice_without_a_release_is_one_press():
 
 def test_every_led_mode_looks_different_and_says_which_slot():
     sample = {m: [PN.leds(m, 2, t * 20_000) for t in range(200)] for m in (PN.M_STEADY, PN.M_TRIAL, PN.M_WINDOW, PN.M_ERASE, PN.M_FACTORY,
-                                                                             PN.M_ERROR, PN.M_CALIB)}
+                                                                             PN.M_ERROR, PN.M_CALIB, PN.M_PAIR)}
     assert set(sample[PN.M_STEADY]) == {(False, False, True, False)}                         # steady: exactly the active one, always
-    for m in (PN.M_TRIAL, PN.M_CALIB):
+    for m in (PN.M_TRIAL, PN.M_CALIB, PN.M_PAIR):
         assert set(sample[m]) == {(False, False, True, False), (False, False, False, False)}  # blinks, and only the active one
     for m in (PN.M_WINDOW, PN.M_ERASE, PN.M_FACTORY, PN.M_ERROR):
         assert set(sample[m]) == {(True,) * 4, (False,) * 4}                                   # all of them together
@@ -70,6 +71,8 @@ def test_every_led_mode_looks_different_and_says_which_slot():
     # faster and faster towards the point of no return
     assert rates[PN.M_FACTORY] > rates[PN.M_ERASE] > rates[PN.M_WINDOW]
     assert rates[PN.M_TRIAL] > rates[PN.M_CALIB]
+    # two quick flashes and a rest: not the slow calibration blink
+    assert rates[PN.M_PAIR] > rates[PN.M_CALIB]
 
 
 # ---------------------------------------------------------------------------------------------------------------- the device
@@ -188,7 +191,7 @@ def test_holding_confirm_ten_seconds_erases_all_personal_data_but_not_before(tmp
     w.phone.connect()
     ident = w.gw.identity.id
     w.gw.button("confirm", True, w.t)
-    w.run(9000)
+    w.run(2500)
     assert w.gw.led_mode(w.t) == PN.M_STEADY
     w.gw.button("confirm", False, w.t)                                                       # let go early: nothing happened
     assert w.gw.slotset.mask() == 0b101 and w.gw.led_mode(w.t) == PN.M_STEADY
@@ -218,7 +221,31 @@ def test_holding_confirm_twenty_seconds_is_a_factory_reset(tmp_path, tremor_dir)
 def test_a_hold_stopped_between_the_thresholds_does_nothing(tmp_path, tremor_dir):
     w = world(tmp_path, tremor_dir)
     w.gw.button("confirm", True, w.t)
-    w.run(5000)
+    w.run(2500)
     w.gw.button("confirm", False, w.t)
     assert w.gw.slotset.mask() == 1 and w.gw.physical_until < w.t                            # not a press either: the window stayed shut
     assert P.StatusSnapshot.unpack(w.gw.read_status()).slot == 0
+
+
+@needs_cc
+def test_holding_confirm_three_seconds_opens_the_pairing_window_and_it_closes_by_itself(tmp_path, tremor_dir):
+    w = world(tmp_path, tremor_dir)
+    w.phone.connect()
+    assert w.phone.get_state()["pairing.open"] is False
+    w.gw.button("confirm", True, w.t)
+    w.run(3500)
+    assert w.gw.led_mode(w.t) == PN.M_STEADY                                              # nothing yet: only the release decides
+    w.gw.button("confirm", False, w.t)
+    assert w.gw.led_mode(w.t) == PN.M_PAIR and w.phone.state["pairing.open"] is True
+    assert w.gw.slotset.mask() == 1 and w.gw.physical_until < w.t                         # not an erase, not a confirm window
+    w.run(121_000)
+    assert w.gw.led_mode(w.t) == PN.M_STEADY and w.phone.state["pairing.open"] is False
+
+
+@needs_cc
+def test_a_hold_between_two_and_three_seconds_still_does_nothing(tmp_path, tremor_dir):
+    w = world(tmp_path, tremor_dir)
+    w.gw.button("confirm", True, w.t)
+    w.run(2500)
+    w.gw.button("confirm", False, w.t)
+    assert w.gw.led_mode(w.t) == PN.M_STEADY and w.gw.pairing_until < w.t and w.gw.physical_until < w.t

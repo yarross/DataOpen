@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import { slotsModel } from '../js/shell.js';
 import { buildView, walk } from '../js/view.js';
 import { Session, SessionError } from '../js/session.js';
-import { T, VER, ERR, FW_CHUNK_MAX, SLOT_COUNT } from '../js/constants.js';
+import { T, VER, ERR, FW_CHUNK_MAX, PKG_CHUNK_MAX, SLOT_COUNT } from '../js/constants.js';
 import { packJson, packMessage, unpackMessage, bodyJson, chunkMessage, Reassembler, packStatus, crc32 } from '../js/link.js';
 import { STRINGS, errKeyFor, t } from '../js/i18n.js';
 
@@ -50,9 +50,12 @@ test('the default manifest offers a slot name, clearing a slot, a copy of all sl
   assert.deepEqual([byId.slot_clear.kind, byId.slot_clear.confirm, byId.slot_clear.danger], ['action', 'two-step', true]);
   assert.deepEqual([byId.export_all.op, byId.export_all.scope, byId.export.scope], ['bundle_get', 'all', 'active']);
   assert.deepEqual([byId.fw_put.op, byId.fw_put.accept], ['fw_put', '.dofw']);
-  assert.equal(byId.fw_state.text, 'An update is loaded and waiting to be applied');
+  assert.equal(byId.fw_state.text, 'Loaded, waiting to be applied');
   assert.equal(byId.fw_version.text, '3');
   assert.equal(byId.fw_apply.confirm, 'two-step');
+  // channel B, apart from the system controls: its own file op, its own actions
+  assert.deepEqual([byId.pkg_put.op, byId.pkg_put.accept], ['pkg_put', '.dopk']);
+  assert.deepEqual([byId.pkg_apply.confirm, byId.pkg_discard.confirm, byId.model_revert.confirm], ['two-step', 'none', 'two-step']);
 });
 
 test('a text control with odd fields is clamped, not trusted', () => {
@@ -95,15 +98,19 @@ class FwDevice {
     for (const c of chunks) this.onChunk(c);
   }
   ok(m, extra = {}) { this.send(packJson(T.ACK, m.req, { ok: true, ...extra })); }
-  fail(m, detail) { this.send(packJson(T.ERR, m.req, { code: ERR.FW_REJECTED, key: 'err.fw_rejected', detail })); }
+  fail(m, detail) {
+    const pkg = m.type === T.PKG_CHUNK || m.type === T.PKG_BEGIN || m.type === T.PKG_END;
+    this.send(packJson(T.ERR, m.req, { code: pkg ? ERR.PKG_REJECTED : ERR.FW_REJECTED, key: pkg ? 'err.pkg_rejected' : 'err.fw_rejected', detail }));
+  }
   answer(m) {
     const j = m.body.length && m.body[0] === 0x7b ? bodyJson(m) : {};
     if (m.type === T.HELLO) this.send(packJson(T.HELLO_R, m.req, this.hello));
     else if (m.type === T.GET && j.what === 'manifest') this.send(packMessage(T.DATA, m.req, new TextEncoder().encode(JSON.stringify({ schema: 1, rev: 1, title: { en: 'a', ru: 'а' }, pages: [] }))));
     else if (m.type === T.GET && j.what === 'state') this.send(packJson(T.DATA, m.req, { rev: 1, state: {} }));
     else if (m.type === T.GET && j.what === 'firmware') this.send(packJson(T.DATA, m.req, { supported: true, upload: this.up ? { next: this.up.next, size: this.up.size } : null }));
-    else if (m.type === T.FW_BEGIN) { this.up = { size: j.size, next: 0, buf: [] }; this.ok(m, { next: 0 }); }
-    else if (m.type === T.FW_CHUNK) {
+    else if (m.type === T.GET && j.what === 'packages') this.send(packJson(T.DATA, m.req, { supported: true, upload: this.up ? { next: this.up.next, size: this.up.size } : null }));
+    else if (m.type === T.FW_BEGIN || m.type === T.PKG_BEGIN) { this.up = { size: j.size, next: 0, buf: [] }; this.ok(m, { next: 0 }); }
+    else if (m.type === T.FW_CHUNK || m.type === T.PKG_CHUNK) {
       if (this.opts.swallow) return;                                                    // the device hears nothing
       if (this.errors.length) return this.fail(m, this.errors.shift());
       const off = new DataView(m.body.buffer, m.body.byteOffset).getUint32(0, true);
@@ -113,6 +120,7 @@ class FwDevice {
       if (this.dropNextChunkReply > 0) { this.dropNextChunkReply--; return; }          // the acknowledgement never arrives
       this.ok(m, { next: this.up.next });
     } else if (m.type === T.FW_END) this.ok(m, { staged: 2 });
+    else if (m.type === T.PKG_END) this.ok(m, { pending: { kinds: ['tuning'], from: 'AAAA-BBBB', button: 'trust' } });
     else if (m.type === T.SET) this.ok(m);
     else this.send(packJson(T.ERR, m.req, { code: ERR.UNSUPPORTED, key: 'err.unsupported', detail: '' }));
   }
@@ -185,4 +193,38 @@ test('the new device errors have words and the detail picks the right ones', () 
   assert.equal(errKeyFor(ERR.PHYSICAL, 'fw.apply'), 'err.physical.fw.apply');
   assert.equal(errKeyFor(ERR.PHYSICAL, 'fw.rollback'), 'err.physical.fw.rollback');
   for (const k of Object.keys(STRINGS.en).filter((x) => x.startsWith('err.fw_rejected.') || x.startsWith('err.physical.'))) assert.ok(STRINGS.ru[k], k);
+});
+
+// ---------------------------------------------------------------------------------------------------------------- channel B: packages
+test('a package goes in its own channel, in numbered pieces, and the begin message carries a size and nothing else', async () => {
+  const dev = new FwDevice();
+  const s = await connect(dev);
+  const pkg = image(PKG_CHUNK_MAX * 2 + 700);
+  const seen = [];
+  const r = await s.putPackage(pkg, (p) => seen.push(p));
+  assert.deepEqual(r.json.pending.kinds, ['tuning']);
+  assert.deepEqual(dev.got, [[0, PKG_CHUNK_MAX], [PKG_CHUNK_MAX, PKG_CHUNK_MAX], [PKG_CHUNK_MAX * 2, 700]]);
+  assert.deepEqual(Buffer.concat(dev.up.buf), Buffer.from(pkg));
+  assert.deepEqual(bodyJson(dev.messages.find((m) => m.type === T.PKG_BEGIN)), { size: pkg.length });
+  assert.ok(!dev.messages.some((m) => m.type === T.FW_BEGIN || m.type === T.FW_CHUNK || m.type === T.FW_END));   // never through the system channel
+  assert.equal(seen.at(-1), 1);
+});
+
+test('a package refused by its header ends the upload at once with the reason in words, and an out-of-step answer resynchronises', async () => {
+  const dev = new FwDevice({ errors: ['wrong_device'] });
+  const s = await connect(dev);
+  await assert.rejects(() => s.putPackage(image(PKG_CHUNK_MAX * 3)), (e) => e instanceof SessionError && e.key === 'err.pkg_rejected.wrong_device' && e.code === ERR.PKG_REJECTED);
+  assert.deepEqual(dev.got, []);                                                       // refused with the first piece: nothing else was sent
+  const dev2 = new FwDevice({ errors: ['sequence'] });
+  const s2 = await connect(dev2);
+  assert.deepEqual((await s2.putPackage(image(3000))).json.pending.kinds, ['tuning']);
+});
+
+test('a lost acknowledgement of a package piece is asked about, not sent twice', async () => {
+  const dev = new FwDevice({ dropReplies: 1 });
+  const s = await connect(dev);
+  const pkg = image(PKG_CHUNK_MAX + 500);
+  await s.putPackage(pkg, () => {}, { pieceTimeoutMs: 60 });
+  assert.deepEqual(dev.got, [[0, PKG_CHUNK_MAX], [PKG_CHUNK_MAX, 500]]);
+  assert.deepEqual(Buffer.concat(dev.up.buf), Buffer.from(pkg));
 });

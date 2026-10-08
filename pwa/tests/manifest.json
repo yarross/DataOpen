@@ -210,8 +210,8 @@
             "en": "Save for another device"
           },
           "help": {
-            "ru": "Выберите карточку устройства-получателя и сверьте его номер с наклейкой. Потребуется нажать кнопку на этом устройстве.",
-            "en": "Choose the other device's card and check its number against its label. You will need to press the button on this device."
+            "ru": "Выберите карточку получателя и сверьте номер с наклейкой. Нужна кнопка на этом устройстве.",
+            "en": "Choose the other device's card and check its number against its label. Needs the button on this device."
           }
         },
         {
@@ -249,8 +249,8 @@
             "en": "Clear this slot"
           },
           "help": {
-            "ru": "Стирает профиль, уровни и название только в этом слоте. Остальные слоты не затрагиваются. Помощь выключится. Потребуется нажать кнопку на устройстве.",
-            "en": "Erases the profile, levels and name of this slot only. The other slots are not touched. Assistance turns off. You will need to press the button on the device."
+            "ru": "Стирает профиль, уровни и название только в этом слоте. Помощь выключится. Нужна кнопка на устройстве.",
+            "en": "Erases the profile, levels and name of this slot only. Assistance turns off. Needs the button on the device."
           }
         }
       ]
@@ -327,8 +327,8 @@
               "en": "Installed, nothing pending"
             },
             "staged": {
-              "ru": "Обновление загружено и ждёт применения",
-              "en": "An update is loaded and waiting to be applied"
+              "ru": "Загружено, ждёт применения",
+              "en": "Loaded, waiting to be applied"
             },
             "trial": {
               "ru": "Новая версия проверяется",
@@ -365,8 +365,8 @@
             "en": "Apply the update"
           },
           "help": {
-            "ru": "Устройство перезапустится. Если новая версия не заработает как надо, прежняя вернётся сама. Потребуется нажать кнопку на устройстве.",
-            "en": "The device restarts. If the new version does not work properly, the previous one comes back by itself. You will need to press the button on the device."
+            "ru": "Устройство перезапустится; если новая версия не заработает, прежняя вернётся сама. Нужна кнопка на устройстве.",
+            "en": "The device restarts; if the new version does not work, the previous one comes back. Needs the button on the device."
           }
         },
         {
@@ -381,6 +381,101 @@
           "help": {
             "ru": "Потребуется нажать кнопку на устройстве.",
             "en": "You will need to press the button on the device."
+          }
+        },
+        {
+          "id": "pkg_state",
+          "type": "status",
+          "key": "pkg.state",
+          "map": {
+            "none": {
+              "ru": "Пакета нет",
+              "en": "No package"
+            },
+            "receiving": {
+              "ru": "Загружается",
+              "en": "Loading"
+            },
+            "pending": {
+              "ru": "Проверен, ждёт применения",
+              "en": "Checked, waiting"
+            }
+          },
+          "label": {
+            "ru": "Пакет для слотов",
+            "en": "Package for the slots"
+          }
+        },
+        {
+          "id": "pkg_put",
+          "type": "file",
+          "op": "pkg_put",
+          "accept": ".dopk",
+          "max_bytes": 22020096,
+          "label": {
+            "ru": "Загрузить пакет",
+            "en": "Load a package"
+          },
+          "help": {
+            "ru": "Только для этого устройства. Сначала проверка, применение отдельно.",
+            "en": "For this device only. Checked first, applied separately."
+          }
+        },
+        {
+          "id": "pkg_apply",
+          "type": "action",
+          "key": "pkg.apply",
+          "confirm": "two-step",
+          "label": {
+            "ru": "Применить пакет",
+            "en": "Apply the package"
+          },
+          "help": {
+            "ru": "Может понадобиться кнопка на устройстве.",
+            "en": "The button on the device may be needed."
+          }
+        },
+        {
+          "id": "pkg_discard",
+          "type": "action",
+          "key": "pkg.discard",
+          "confirm": "none",
+          "label": {
+            "ru": "Отменить пакет",
+            "en": "Drop the package"
+          }
+        },
+        {
+          "id": "model_state",
+          "type": "status",
+          "key": "model.state",
+          "map": {
+            "none": {
+              "ru": "Своей нет",
+              "en": "None of its own"
+            },
+            "ok": {
+              "ru": "Установлена",
+              "en": "Installed"
+            },
+            "needs_system": {
+              "ru": "Нужна новая система",
+              "en": "Needs a newer system"
+            }
+          },
+          "label": {
+            "ru": "Модель значков в слоте",
+            "en": "Icon model in this slot"
+          }
+        },
+        {
+          "id": "model_revert",
+          "type": "action",
+          "key": "pkg.revert",
+          "confirm": "two-step",
+          "label": {
+            "ru": "Вернуть прежнюю модель",
+            "en": "Previous model"
           }
         },
         {
@@ -409,8 +504,8 @@
             "en": "Erase personal data (all slots)"
           },
           "help": {
-            "ru": "Удаляет профили, настройки и список доверенных во всех слотах. Помощь выключится. Потребуется нажать кнопку на устройстве. То же делает удержание кнопки подтверждения 10 секунд.",
-            "en": "Deletes the profiles, the settings and the trusted list in every slot. Assistance turns off. You will need to press the button on the device. Holding the confirm button for 10 seconds does the same."
+            "ru": "Удаляет профили, настройки и доверенных во всех слотах; помощь выключится. Нужна кнопка на устройстве или удержание 10 с.",
+            "en": "Deletes profiles, settings and trusted senders in every slot; assistance turns off. Needs the button, or holding it for 10 s."
           }
         },
         {
@@ -424,8 +519,8 @@
             "en": "Factory reset"
           },
           "help": {
-            "ru": "То же, и новый номер владельца (серийный остаётся): старые файлы не откроются, телефоны забываются. Прошивка не меняется. Нужна кнопка на устройстве или удержание CONFIRM 20 с.",
-            "en": "The same, plus a new owner number (the serial stays): old files stop opening, phones are forgotten. The firmware stays. Needs the button on the device, or holding CONFIRM for 20 s."
+            "ru": "То же, и новый номер владельца (серийный остаётся): старые файлы не откроются, телефоны забываются. Нужна кнопка или удержание 20 с.",
+            "en": "The same, plus a new owner number (the serial stays): old files stop opening, phones are forgotten. Needs the button, or holding it for 20 s."
           }
         }
       ]

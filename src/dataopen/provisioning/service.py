@@ -30,6 +30,7 @@ def wipe_personal(directory: Path) -> None:
         for p in d.glob(pattern):
             p.unlink(missing_ok=True)
     shutil.rmtree(d / "slots", ignore_errors=True)
+    shutil.rmtree(d / "pkg", ignore_errors=True)
     provision(FileKeyStore(d / "keys" / "keys.json"))
 
 

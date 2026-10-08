@@ -38,11 +38,13 @@ from .identity import Card, CardError, FileKeyStore, KeyStore, load_identity, pr
 from .manifest import Manifest, validate_manifest
 from .slots import SLOT_COUNT, SettingsStore, Slot, SlotSet, clean_name, migrate_legacy
 from .vault import Vault, VaultError
+from ..updates.channels import MAGIC_A, UpdateError, channel_of
+from ..updates.manager import PackageManager, Refusal
 
 __all__ = ["Gateway", "Settings", "SettingsStore", "Learner", "SLOT_COUNT"]
 
 FW = "ctl-2"
-CAP_CALIBRATION, CAP_BUNDLE, CAP_SLOTS, CAP_FIRMWARE = 1, 2, 4, 8
+CAP_CALIBRATION, CAP_BUNDLE, CAP_SLOTS, CAP_FIRMWARE, CAP_PACKAGES = 1, 2, 4, 8, 16
 FW_IDLE_US = 60_000_000                 # an upload nobody has touched for this long is dropped
 MAX_TRUSTED = 16
 SEAL_CODES = {"damaged": (P.E.BAD_BUNDLE, "damaged"), "version": (P.E.BAD_BUNDLE, "version"), "unsupported": (P.E.UNSUPPORTED, "section"),
@@ -141,6 +143,7 @@ class Gateway:
                 self.fw.install_factory(factory_image)
             self.fw.reboot()                    # what the bootloader decides at this boot (counts a boot of an unconfirmed update)
             self.fw.save(self.fw_dir)
+        self.pkg = PackageManager(self)               # channel B: sealed packages for the slots (docs/UPDATES.md)
         # bridge side
         self.gen_counter = 0
         self.gen = {"asc": 0, "tremor": 0}
@@ -173,6 +176,7 @@ class Gateway:
         self.pairing_until = -1
         self.bad_messages = 0
         self.last_error = ""
+        self.pkg.recover(self.clock())               # an apply that a restart cut in the middle is finished
         self._publish(self.clock(), force_status=True)
 
     # ------------------------------------------------------------------------------------------------------ factory identity
@@ -479,6 +483,7 @@ class Gateway:
         self._stop_calibration(now)
         self.trial = None
         self.slotset.clear(self.active)
+        self.pkg.touch()
         self.settings = Settings(False, T.LEVEL_DEFAULT, T.LEVEL_DEFAULT)
         self._load_profile()
         old, self.manifest = self.manifest, self._slot_manifest()
@@ -540,7 +545,7 @@ class Gateway:
                 "trial.left_s": self._trial_left(now),
                 "pairing.open": now < self.pairing_until, "slot.active": self.active, "slot.name": self.slot.name,
                 **{f"slot.{s.k}.name": s.name for s in self.slotset},
-                "fw.version": self._fw_version(), "fw.state": self._fw_state()}
+                "fw.version": self._fw_version(), "fw.state": self._fw_state(), **self.pkg.state()}
 
     def _fw_version(self) -> int:
         if self.fw is None:
@@ -593,7 +598,8 @@ class Gateway:
         return self.status().pack()
 
     def read_info(self) -> bytes:
-        caps = (CAP_CALIBRATION if self.learner is not None else 0) | CAP_BUNDLE | CAP_SLOTS | (CAP_FIRMWARE if self.fw else 0)
+        caps = ((CAP_CALIBRATION if self.learner is not None else 0) | CAP_BUNDLE | CAP_SLOTS | CAP_PACKAGES
+                | (CAP_FIRMWARE if self.fw else 0))
         return P.Info(caps, self.identity.digest[:4], self.manifest.hash, self.manifest.rev, self.chunk_cap).pack()
 
     # ------------------------------------------------------------------------------------------------------ main loop
@@ -612,6 +618,7 @@ class Gateway:
                 except ProfileError:
                     self.live_progress = None
         self._fw_tick(now)
+        self.pkg.tick(now)
         self._publish(now)
 
     def _fw_tick(self, now: int) -> None:
@@ -763,6 +770,8 @@ class Gateway:
                                        {"active": self.active, "count": SLOT_COUNT, "slots": [s.info() for s in self.slotset]}))
             elif what == P.GET_FIRMWARE:
                 self._send(P.pack_json(P.T_DATA, m.req, self._fw_info()))
+            elif what == P.GET_PACKAGES:
+                self._send(P.pack_json(P.T_DATA, m.req, self.pkg.info()))
             else:
                 raise _Refuse(P.E.BAD_KEY, "get what?")
         elif t == P.T_SET:
@@ -798,6 +807,8 @@ class Gateway:
             self._ack(m.req)
         elif t in (P.T_FW_BEGIN, P.T_FW_CHUNK, P.T_FW_END):
             self._firmware_stream(m, now)
+        elif t in (P.T_PKG_BEGIN, P.T_PKG_CHUNK, P.T_PKG_END):
+            self._package_stream(m, now)
         else:
             raise _Refuse(P.E.UNSUPPORTED, f"type {t:#x}")
 
@@ -847,6 +858,8 @@ class Gateway:
             self._fw_apply(now)
         elif key == "fw.rollback":
             self._fw_rollback(now)
+        elif key in ("pkg.apply", "pkg.discard", "pkg.revert"):
+            self._pkg_act(key, now)
         else:
             raise _Refuse(P.E.BAD_KEY, key)
 
@@ -992,6 +1005,7 @@ class Gateway:
                 except OSError:
                     pass
         shutil.rmtree(self.dir / "slots", ignore_errors=True)
+        self.pkg.erase()                                              # a package waiting to be applied is personal too
         if factory:
             self.identity = provision(self.keystore)
             self._attach_device()                                    # same serial, same DAK, a new owner card signed by it
@@ -1043,6 +1057,9 @@ class Gateway:
             if m.type == P.T_FW_CHUNK:
                 if len(m.body) < 5:
                     raise FirmwareError("damaged", "empty chunk")
+                if int.from_bytes(m.body[:4], "little") == 0 and len(m.body) >= 8 and m.body[4:8] != MAGIC_A:
+                    self.fw_upload = None                     # the first bytes say what a file is: a package is not a system image
+                    raise FirmwareError("wrong_channel" if channel_of(m.body[4:8]) == "B" else "damaged", "not a system image")
                 nxt = up.chunk(int.from_bytes(m.body[:4], "little"), m.body[4:], now)
                 self._ack(m.req, next=nxt)
                 return
@@ -1059,6 +1076,36 @@ class Gateway:
         except (FirmwareError, KeyError, TypeError, ValueError) as e:
             key = e.key if isinstance(e, FirmwareError) else "damaged"
             raise _Refuse(P.E.FW_REJECTED, key) from None
+
+    # ------------------------------------------------------------------------------------------------------ packages (channel B)
+    def _package_stream(self, m: P.Message, now: int) -> None:
+        """PKG_BEGIN {size}, PKG_CHUNK (u32 offset + data)*, PKG_END: a sealed package for this device. The header is judged as soon as
+        it is here (signature, recipient, replay, schema), the rest is checked as it arrives; nothing is applied by receiving it."""
+        try:
+            if m.type == P.T_PKG_BEGIN:
+                self.pkg.begin(m.json(), now)
+                self._ack(m.req, next=0)
+            elif m.type == P.T_PKG_CHUNK:
+                self._ack(m.req, next=self.pkg.chunk(m.body, now))
+            else:
+                self._ack(m.req, pending=self.pkg.end(now))
+        except UpdateError as e:
+            raise _Refuse(P.E.PKG_REJECTED, e.key) from None
+        except (KeyError, TypeError, ValueError):
+            raise _Refuse(P.E.PKG_REJECTED, "damaged") from None
+
+    def _pkg_act(self, key: str, now: int) -> None:
+        try:
+            if key == "pkg.apply":
+                self.pkg.apply(now)
+            elif key == "pkg.discard":
+                self.pkg.discard()
+            else:
+                self.pkg.revert(now)
+        except UpdateError as e:
+            raise _Refuse(P.E.PKG_REJECTED, e.key) from None
+        except Refusal as r:
+            raise _Refuse(r.code, r.detail) from None
 
     def _reboot(self, why: str) -> None:
         """On a board: the bootloader takes over right here. In the simulation the world swaps in a fresh gateway on the same directory."""

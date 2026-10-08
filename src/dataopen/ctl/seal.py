@@ -30,7 +30,8 @@ HEAD_FMT = "<4sBBH16s8s8sQ32s32s32s12sI"
 HEAD = struct.calcsize(HEAD_FMT)
 SIG = 64
 TAG = 16
-MAX_FILE = 16000                       # a CtlLink body is 16 KB; the streaming that model weights need is a later step
+# a CtlLink body is 16 KB; what is bigger (model weights) travels as a streamed `DOPK` package (updates/package.py)
+MAX_FILE = 16000
 PAD = 256
 F_SELF = 1
 S_PROFILE, S_TUNING, S_MANIFEST, S_META, S_MODEL, S_SLOT = 1, 2, 3, 4, 5, 6
@@ -258,7 +259,7 @@ def open_sealed(raw: bytes, me: Identity) -> Opened:
         raise SealError("wrong_device", "made for another device") from None     # signed by the sender, yet not for these keys
     sec = _untlv(inner)
     if any(t not in KNOWN for t in sec):
-        raise SealError("unsupported", "a section this device does not understand (model weights are not accepted yet)")
+        raise SealError("unsupported", "a section this device does not understand (model weights travel in a package, docs/UPDATES.md)")
     if not sec:
         raise SealError("damaged", "nothing inside")
     slots: list[SlotData] = []

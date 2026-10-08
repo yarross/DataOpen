@@ -6,7 +6,7 @@
 //   write(chunk: Uint8Array) -> Promise                                              one chunk to the device
 //   close()                                                                           ends the connection
 //   onChunk(u8), onStatus(u8), onClose()                                              set by the session
-import { T, VER, ERR, CHUNK_MIN, CHUNK_MAX, FW_CHUNK_MAX } from './constants.js';
+import { T, VER, ERR, CHUNK_MIN, CHUNK_MAX, FW_CHUNK_MAX, PKG_CHUNK_MAX } from './constants.js';
 import { packMessage, packJson, unpackMessage, bodyJson, chunkMessage, Reassembler, unpackStatus, unpackInfo, crc32 } from './link.js';
 import { errKeyFor, errParams } from './i18n.js';
 
@@ -268,29 +268,41 @@ export class Session {
   // A firmware image goes to the device in order, in pieces; the device checks the whole of it (the manufacturer's signature, the hardware,
   // the version) and puts it into the bank that is not running. The page only carries bytes. A piece that was not acknowledged is asked about
   // ('where are you?') and the upload goes on from there, a few times, before it gives up. Resolves with the device's answer to the end.
-  async putFirmware(bytes, onProgress = () => {}, { retries = 3, pieceTimeoutMs = 20000 } = {}) {
-    await this.request(T.FW_BEGIN, { size: bytes.length, name: 'update' }, { timeoutMs: 10000 });
+  async putFirmware(bytes, onProgress = () => {}, opts = {}) {
+    return this._upload({ begin: T.FW_BEGIN, chunk: T.FW_CHUNK, end: T.FW_END, max: FW_CHUNK_MAX, code: ERR.FW_REJECTED, info: () => this.getFirmware() },
+      bytes, { size: bytes.length, name: 'update' }, onProgress, opts);
+  }
+  // Channel B: a package for the slots (a profile, levels, a layout, a model). The same piece-by-piece transfer, but a different channel on the wire
+  // (PKG_*, not FW_*): the device judges the header (signature, recipient, replay, version) with the first pieces and refuses at once, long before
+  // the last byte is sent. The page only carries bytes. Resolves with the device's answer to the end ({ pending: { kinds, from, button, ... } }).
+  async getPackages() { return (await this.request(T.GET, { what: 'packages' })).json; }
+  async putPackage(bytes, onProgress = () => {}, opts = {}) {
+    return this._upload({ begin: T.PKG_BEGIN, chunk: T.PKG_CHUNK, end: T.PKG_END, max: PKG_CHUNK_MAX, code: ERR.PKG_REJECTED, info: () => this.getPackages() },
+      bytes, { size: bytes.length }, onProgress, opts);
+  }
+  async _upload(ch, bytes, beginBody, onProgress, { retries = 3, pieceTimeoutMs = 20000 } = {}) {
+    await this.request(ch.begin, beginBody, { timeoutMs: 10000 });
     let off = 0, left = retries;
     onProgress(0);
     while (off < bytes.length) {
-      const piece = bytes.subarray(off, Math.min(off + FW_CHUNK_MAX, bytes.length));
+      const piece = bytes.subarray(off, Math.min(off + ch.max, bytes.length));
       const body = new Uint8Array(4 + piece.length);
       new DataView(body.buffer).setUint32(0, off, true);
       body.set(piece, 4);
       try {
-        const r = await this.request(T.FW_CHUNK, {}, { body, timeoutMs: pieceTimeoutMs });
+        const r = await this.request(ch.chunk, {}, { body, timeoutMs: pieceTimeoutMs });
         off = Number.isInteger(r.json.next) ? r.json.next : off + piece.length;
         left = retries;
         onProgress(off / bytes.length);
       } catch (e) {
-        const resync = e instanceof SessionError && (e.key === 'err.timeout' || (e.code === ERR.FW_REJECTED && e.detail === 'sequence'));
+        const resync = e instanceof SessionError && (e.key === 'err.timeout' || (e.code === ch.code && e.detail === 'sequence'));
         if (!resync || left-- <= 0) throw e;
-        const up = (await this.getFirmware()).upload;
+        const up = (await ch.info()).upload;
         if (!up || !Number.isInteger(up.next)) throw e;
         off = up.next;
       }
     }
-    return this.request(T.FW_END, {}, { body: new Uint8Array(0), timeoutMs: 30000 });
+    return this.request(ch.end, {}, { body: new Uint8Array(0), timeoutMs: 30000 });
   }
   ping() { return this.request(T.PING, {}); }
 }

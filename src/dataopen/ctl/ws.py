@@ -161,6 +161,17 @@ class SimServer:
             ms = float(parts[4]) if len(parts) > 4 else 100.0
             wd.press(parts[3], ms)
             out = {"ok": True}
+        elif target.startswith("/sim/package/"):
+            # /sim/package/<kind>/<seq>[/<slot>]: a package for THIS device from a test sender
+            # (kinds: tuning, model, big, forged, other, tampered)
+
+            from ..updates.dev import sim_package
+            parts = target.split("/")
+            slot = int(parts[5]) if len(parts) > 5 else None
+            data = sim_package(parts[3], wd.gw.identity.card(), Path(wd.dir) / "sim-senders", int(parts[4]), slot)
+            head = f"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {len(data)}\r\nConnection: close\r\n\r\n"
+            w.write(head.encode() + data)
+            return
         elif target.startswith("/sim/image/"):
             # /sim/image/<version>[/<min_version>]: an update image signed by the simulation's TEST manufacturer
             from .sim import dev_image

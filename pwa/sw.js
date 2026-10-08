@@ -1,6 +1,6 @@
 // Offline-first: every file of the app is cached on the first visit and served from the cache afterwards. A new version is fetched in
 // the background but only takes over when the person presses "Update" (the page then reloads once). Nothing is ever sent anywhere.
-const VERSION = 'ad531724d1d0';
+const VERSION = '95e90ac9a3da';
 const FILES = [
   './',
   'app.css',

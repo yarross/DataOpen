@@ -138,10 +138,11 @@
 | золотой образ восстановления (подписан) | eMMC boot-раздел с аппаратной защитой записи | vendor-only | kept | kept | kept | kept |
 | ключи владельца (Device Public ID) и его DAK-сертификат | secure element / хранилище ключей | user-resettable | kept | kept | replaced | replaced |
 | ключ диска (шифрует профили, настройки) | secure element / хранилище ключей | user-resettable | kept | replaced | replaced | replaced |
-| профиль, уровни, имя, манифест активного слота | eMMC data, зашифровано ключом слота | user-resettable | erased | erased | erased | erased |
-| остальные слоты | eMMC data, зашифровано ключами слотов | user-resettable | kept | erased | erased | erased |
+| профиль, уровни, имя, манифест и модель значков активного слота | eMMC data, зашифровано ключом слота | user-resettable | erased | erased | erased | erased |
+| остальные слоты (в том числе их модели) | eMMC data, зашифровано ключами слотов | user-resettable | kept | erased | erased | erased |
 | настройки (помощь вкл/выкл, активный слот) | eMMC data | user-resettable | assist off | erased | erased | erased |
 | список доверенных отправителей и счётчики повтора | eMMC data | user-resettable | kept | erased | erased | erased |
+| загруженный, но не применённый пакет (канал B, каталог pkg/) | eMMC data | user-resettable | kept | erased | erased | erased |
 | сопряжённые телефоны (привязки BLE) | стек BlueZ | user-resettable | kept | kept | erased | erased |
 | образы SoM, банки A/B | eMMC | vendor-only | kept | kept | kept | reinstalled |
 | образы MCU моста, банки A/B | QSPI-флеш моста | vendor-only | kept | kept | kept | reinstalled |

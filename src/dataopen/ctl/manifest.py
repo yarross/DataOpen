@@ -16,10 +16,11 @@ from . import protocol as P
 SCHEMA = 1
 TYPES = ("status", "toggle", "stepper", "action", "meter", "note", "file", "group", "text")
 CONFIRMS = ("none", "revert", "two-step")
-FILE_OPS = ("bundle_put", "bundle_get", "bundle_for_card", "card_get", "fw_put")
+FILE_OPS = ("bundle_put", "bundle_get", "bundle_for_card", "card_get", "fw_put", "pkg_put")
 SCOPES = ("active", "all")           # which slots a file control saves: the active one, or every one that holds anything
 MAX_TEXT = 40
 FW_MAX_BYTES = 64 * 1024 * 1024
+PKG_MAX_BYTES = 21 * 1024 * 1024   # a package: up to 20 MiB of content plus the sealing
 MAX_PAGES, MAX_CONTROLS, MAX_DEPTH = 8, 64, 3
 MAX_LABEL, MAX_HELP, MAX_STEPS = 80, 240, 20
 LANGS = ("ru", "en")
@@ -79,10 +80,8 @@ def default_manifest(rev: int = 1) -> dict:
                            "All the slots in one file. It opens only on this device.")},
                 {"id": "export_other", "type": "file", "op": "bundle_for_card", "accept": ".docard", "max_bytes": 4096,
                  "label": L("Сохранить для другого устройства", "Save for another device"),
-                 "help": L("Выберите карточку устройства-получателя и сверьте его номер с наклейкой. "
-                           "Потребуется нажать кнопку на этом устройстве.",
-                           "Choose the other device's card and check its number against its label. "
-                           "You will need to press the button on this device.")},
+                 "help": L("Выберите карточку получателя и сверьте номер с наклейкой. Нужна кнопка на этом устройстве.",
+                           "Choose the other device's card and check its number against its label. Needs the button on this device.")},
                 {"id": "restore", "type": "action", "key": "profile.restore", "confirm": "two-step",
                  "label": L("Вернуть прежний профиль", "Restore the previous profile")},
                 {"id": "slot_name", "type": "text", "key": "slot.name", "maxlen": 24,
@@ -91,10 +90,8 @@ def default_manifest(rev: int = 1) -> dict:
                            "For example \"Work\" or \"Browser\". Shown only on this device and in the phone.")},
                 {"id": "slot_clear", "type": "action", "key": "slot.clear", "confirm": "two-step", "danger": True,
                  "label": L("Очистить этот слот", "Clear this slot"),
-                 "help": L("Стирает профиль, уровни и название только в этом слоте. Остальные слоты не затрагиваются. "
-                           "Помощь выключится. Потребуется нажать кнопку на устройстве.",
-                           "Erases the profile, levels and name of this slot only. The other slots are not touched. "
-                           "Assistance turns off. You will need to press the button on the device.")},
+                 "help": L("Стирает профиль, уровни и название только в этом слоте. Помощь выключится. Нужна кнопка на устройстве.",
+                           "Erases the profile, levels and name of this slot only. Assistance turns off. Needs the button on the device.")},
             ]},
             {"id": "more", "title": L("Ещё", "More"), "controls": [
                 {"id": "serial", "type": "status", "key": "device.serial", "label": L("Серийный номер (как на наклейке)",
@@ -114,7 +111,7 @@ def default_manifest(rev: int = 1) -> dict:
                 {"id": "fw_state", "type": "status", "key": "fw.state",
                  "map": {"unsupported": L("Обновление не поддерживается", "Updates are not supported"),
                          "current": L("Установлена, обновлений нет", "Installed, nothing pending"),
-                         "staged": L("Обновление загружено и ждёт применения", "An update is loaded and waiting to be applied"),
+                         "staged": L("Загружено, ждёт применения", "Loaded, waiting to be applied"),
                          "trial": L("Новая версия проверяется", "The new version is being checked")},
                  "label": L("Обновление", "Update")},
                 {"id": "fw_put", "type": "file", "op": "fw_put", "accept": ".dofw", "max_bytes": 4194304,
@@ -124,30 +121,47 @@ def default_manifest(rev: int = 1) -> dict:
                            "while the current version keeps running.")},
                 {"id": "fw_apply", "type": "action", "key": "fw.apply", "confirm": "two-step",
                  "label": L("Применить обновление", "Apply the update"),
-                 "help": L("Устройство перезапустится. Если новая версия не заработает как надо, прежняя вернётся сама. "
-                           "Потребуется нажать кнопку на устройстве.",
-                           "The device restarts. If the new version does not work properly, the previous one comes back by itself. "
-                           "You will need to press the button on the device.")},
+                 "help": L("Устройство перезапустится; если новая версия не заработает, прежняя вернётся сама. "
+                           "Нужна кнопка на устройстве.",
+                           "The device restarts; if the new version does not work, the previous one comes back. "
+                           "Needs the button on the device.")},
                 {"id": "fw_rollback", "type": "action", "key": "fw.rollback", "confirm": "two-step",
                  "label": L("Вернуть прежнюю версию", "Go back to the previous version"),
                  "help": L("Потребуется нажать кнопку на устройстве.", "You will need to press the button on the device.")},
+                {"id": "pkg_state", "type": "status", "key": "pkg.state",
+                 "map": {"none": L("Пакета нет", "No package"), "receiving": L("Загружается", "Loading"),
+                         "pending": L("Проверен, ждёт применения", "Checked, waiting")},
+                 "label": L("Пакет для слотов", "Package for the slots")},
+                {"id": "pkg_put", "type": "file", "op": "pkg_put", "accept": ".dopk", "max_bytes": PKG_MAX_BYTES,
+                 "label": L("Загрузить пакет", "Load a package"),
+                 "help": L("Только для этого устройства. Сначала проверка, применение отдельно.",
+                           "For this device only. Checked first, applied separately.")},
+                {"id": "pkg_apply", "type": "action", "key": "pkg.apply", "confirm": "two-step",
+                 "label": L("Применить пакет", "Apply the package"),
+                 "help": L("Может понадобиться кнопка на устройстве.", "The button on the device may be needed.")},
+                {"id": "pkg_discard", "type": "action", "key": "pkg.discard", "confirm": "none",
+                 "label": L("Отменить пакет", "Drop the package")},
+                {"id": "model_state", "type": "status", "key": "model.state",
+                 "map": {"none": L("Своей нет", "None of its own"), "ok": L("Установлена", "Installed"),
+                         "needs_system": L("Нужна новая система", "Needs a newer system")},
+                 "label": L("Модель значков в слоте", "Icon model in this slot")},
+                {"id": "model_revert", "type": "action", "key": "pkg.revert", "confirm": "two-step",
+                 "label": L("Вернуть прежнюю модель", "Previous model")},
                 {"id": "forget", "type": "action", "key": "pairing.forget", "confirm": "two-step", "danger": True,
                  "label": L("Забыть все телефоны", "Forget all phones"),
                  "help": L("Потребуется нажать кнопку на самом устройстве.", "You will need to press the button on the device itself.")},
                 {"id": "erase", "type": "action", "key": "erase.profile", "confirm": "two-step", "danger": True,
                  "label": L("Стереть личные данные (все слоты)", "Erase personal data (all slots)"),
-                 "help": L("Удаляет профили, настройки и список доверенных во всех слотах. Помощь выключится. "
-                           "Потребуется нажать кнопку на устройстве. То же делает удержание кнопки подтверждения 10 секунд.",
-                           "Deletes the profiles, the settings and the trusted list in every slot. Assistance turns off. "
-                           "You will need to press the button on the device. Holding the confirm button for 10 seconds does the same.")},
+                 "help": L("Удаляет профили, настройки и доверенных во всех слотах; помощь выключится. "
+                           "Нужна кнопка на устройстве или удержание 10 с.",
+                           "Deletes profiles, settings and trusted senders in every slot; assistance turns off. "
+                           "Needs the button, or holding it for 10 s.")},
                 {"id": "factory", "type": "action", "key": "factory.reset", "confirm": "two-step", "danger": True,
                  "label": L("Заводской сброс", "Factory reset"),
                  "help": L("То же, и новый номер владельца (серийный остаётся): старые файлы не откроются, "
-                           "телефоны забываются. Прошивка не меняется. "
-                           "Нужна кнопка на устройстве или удержание CONFIRM 20 с.",
+                           "телефоны забываются. Нужна кнопка или удержание 20 с.",
                            "The same, plus a new owner number (the serial stays): old files stop opening, "
-                           "phones are forgotten. The firmware stays. "
-                           "Needs the button on the device, or holding CONFIRM for 20 s.")},
+                           "phones are forgotten. Needs the button, or holding it for 20 s.")},
             ]},
         ],
     }
@@ -243,7 +257,7 @@ def validate_manifest(m: Any) -> list[str]:
         elif typ == "file":
             if c.get("op") not in FILE_OPS:
                 errs.append(f"{w}: op must be one of {FILE_OPS}")
-            cap = FW_MAX_BYTES if c.get("op") == "fw_put" else 65536
+            cap = FW_MAX_BYTES if c.get("op") == "fw_put" else PKG_MAX_BYTES if c.get("op") == "pkg_put" else 65536
             if not isinstance(c.get("max_bytes"), int) or isinstance(c.get("max_bytes"), bool) or not 0 < c["max_bytes"] <= cap:
                 errs.append(f"{w}: max_bytes must be 1..{cap}")
             if c.get("scope", "active") not in SCOPES:

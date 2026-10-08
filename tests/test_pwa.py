@@ -70,7 +70,8 @@ def _node(env_extra=None, files=None, timeout=400):
 
 @needs_node
 def test_the_clients_own_tests():
-    pure = [str(p) for p in sorted((PWA / "tests").glob("*.test.mjs")) if p.name not in ("e2e.test.mjs", "live-slots.test.mjs")]
+    live = ("e2e.test.mjs", "live-slots.test.mjs", "live-packages.test.mjs")
+    pure = [str(p) for p in sorted((PWA / "tests").glob("*.test.mjs")) if p.name not in live]
     r = _node(files=pure)
     assert r.returncode == 0, r.stdout[-3000:] + r.stderr[-2000:]
     assert re.search(r"# pass (\d+)", r.stdout) and int(re.search(r"# pass (\d+)", r.stdout).group(1)) > 60
@@ -108,7 +109,7 @@ def test_the_client_against_two_real_gateways_and_bridge_cores():
     pa, a = _start_sim("--trial-s", "3")
     pb, b = _start_sim("--trial-s", "3", "--profile", "none")
     try:
-        names = ["ble.test.mjs", "e2e.test.mjs", "transfer.test.mjs", "live-slots.test.mjs"]
+        names = ["ble.test.mjs", "e2e.test.mjs", "transfer.test.mjs", "live-slots.test.mjs", "live-packages.test.mjs"]
         r = _node({"DATAOPEN_SIM_URL": a, "DATAOPEN_SIM_URL_B": b}, files=[str(PWA / "tests" / n) for n in names])
         assert r.returncode == 0, r.stdout[-4000:] + r.stderr[-2000:]
         assert "# skipped 0" in r.stdout, "the end-to-end tests were skipped"

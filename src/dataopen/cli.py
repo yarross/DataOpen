@@ -390,6 +390,8 @@ def build_parser() -> argparse.ArgumentParser:
     register_prov(sub)
     from .latency.cli import register as register_latency
     register_latency(sub)
+    from .updates.cli import register as register_updates
+    register_updates(sub)
     return p
 
 

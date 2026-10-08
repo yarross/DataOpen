@@ -173,7 +173,7 @@ function buildAction(n, ctx) {
 function buildFile(n, ctx) {
   const lab = h('span', { class: 'label' });
   const help = h('p', { class: 'help' });
-  const takes = n.op === 'bundle_put' || n.op === 'bundle_for_card' || n.op === 'fw_put';   // these receive a file; the others only hand one to the phone
+  const takes = n.op === 'bundle_put' || n.op === 'bundle_for_card' || n.op === 'fw_put' || n.op === 'pkg_put';   // these receive a file; the others only hand one to the phone
   const input = takes ? h('input', { type: 'file', hidden: true, accept: n.accept }) : null;
   const btn = h('button', { class: 'btn wide', type: 'button' });
   const drop = takes ? h('div', { class: 'drop' }) : null;
@@ -192,7 +192,7 @@ function buildFile(n, ctx) {
     lab.textContent = m.label;
     help.textContent = m.help;
     help.hidden = !m.help;
-    btn.textContent = m.op === 'bundle_put' || m.op === 'fw_put' ? t(ctx.lang, 'file.choose') : m.op === 'bundle_for_card' ? t(ctx.lang, 'file.choose_card') : m.label;
+    btn.textContent = m.op === 'bundle_put' || m.op === 'fw_put' || m.op === 'pkg_put' ? t(ctx.lang, 'file.choose') : m.op === 'bundle_for_card' ? t(ctx.lang, 'file.choose_card') : m.label;
     lab.hidden = btn.textContent === m.label;
     btn.disabled = !ctx.online;
     if (drop) drop.textContent = t(ctx.lang, 'file.drop');

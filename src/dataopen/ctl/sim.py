@@ -208,6 +208,25 @@ class SimPhone:
                 return r
         return self.call(P.T_FW_END, body=b"")
 
+    def get_packages(self) -> dict:
+        r = self.call(P.T_GET, {"what": "packages"})
+        assert r.type == P.T_DATA, r.body
+        return r.json()
+
+    def pkg_send(self, raw: bytes, piece: int = 4096, stop_after: Optional[int] = None) -> P.Message:
+        """A package the way the client sends it: PKG_BEGIN, pieces in order, PKG_END. Returns the reply to the first refusal, else the
+        reply to PKG_END. `stop_after`: send only that many bytes and return the last acknowledgement (a connection that drops)."""
+        r = self.call(P.T_PKG_BEGIN, {"size": len(raw)})
+        if r.type != P.T_ACK:
+            return r
+        for off in range(0, len(raw), piece):
+            if stop_after is not None and off >= stop_after:
+                return r
+            r = self.call(P.T_PKG_CHUNK, body=off.to_bytes(4, "little") + raw[off : off + piece])
+            if r.type != P.T_ACK:
+                return r
+        return self.call(P.T_PKG_END, body=b"")
+
     def disconnect(self) -> None:
         self.gw.on_disconnect()
 

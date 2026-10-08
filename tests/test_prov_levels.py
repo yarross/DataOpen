@@ -9,9 +9,14 @@ from dataopen.ctl.identity import Card
 from dataopen.ctl.sim import World, seed_profile
 from dataopen.provisioning import records as R
 from dataopen.provisioning import station as ST
+from dataopen.updates import package as K
 from prov_helpers import provisioned, vendor
+import pkg_helpers as H
 
 from test_ctl_gateway import err, ok
+
+MODEL = H.tiny_model()
+CARD = H.card_of(MODEL, name="icons")
 
 pytestmark = pytest.mark.skipif(shutil.which("gcc") is None and shutil.which("cc") is None, reason="no C compiler")
 
@@ -45,6 +50,11 @@ def fill(w, state):
     ok(ph.confirm(True))
     w.gw.trust["senders"]["ab" * 8] = {"id": "ABCD-EFGH", "last_seq": 4}
     w.gw._save_trust()
+    me = w.gw.identity
+    for k in (0, 2):                                        # a model in the active slot and in another one
+        w.phone.pkg_send(K.build_package(me, me.card(), me.next_seq(), slot=k, model=(MODEL, CARD)))
+        ok(ph.act("pkg.apply", True))
+    w.phone.pkg_send(K.build_package(me, me.card(), me.next_seq(), slot=1, tuning=(3, 3)))      # and one more, still waiting
     return ph
 
 
@@ -68,8 +78,9 @@ def observe(w, before, active_before=2):
             "golden": "kept" if after["golden"] == before["golden"] else "changed",
             "owner_keys": "kept" if after["id"] == before["id"] else "replaced",
             "storage_key": "kept" if after["storage"] == before["storage"] else "replaced",
-            "slot_active": "kept" if gw.slotset[active_before].has else "erased",
-            "slots_other": "kept" if gw.slotset[0].has else "erased",
+            "slot_active": "kept" if gw.slotset[active_before].has and (gw.slotset[active_before].dir / "model.bin").exists() else "erased",
+            "slots_other": "kept" if gw.slotset[0].has and (gw.slotset[0].dir / "model.bin").exists() else "erased",
+            "pkg_pending": "kept" if gw.pkg.summary() is not None and (gw.pkg.dir / "pending.dopk").exists() else "erased",
             "settings": settings, "trust": "kept" if gw.trust["senders"] else "erased",
             "bonds": "erased" if w.forgets else "kept",
             "fw_som": "kept" if after["fw"] == before["fw"] else "changed",

@@ -88,6 +88,14 @@ export async function start(root = document.getElementById('app'), env = {}) {
         const progress = (p) => { const pct = Math.floor(p * 100); if (pct !== shown && (pct - shown >= 5 || pct === 100)) { shown = pct; say('info', t(prefs.lang, 'fw.progress', { pct })); } };
         await session.putFirmware(new Uint8Array(await file.arrayBuffer()), progress);
         say('info', t(prefs.lang, 'fw.staged'));
+      } else if (node.op === 'pkg_put') {                                // a package for the slots: opaque bytes; the device judges the header first
+        if (!file) return;
+        if (node.maxBytes && file.size > node.maxBytes) { say('error', t(prefs.lang, 'file.too_big')); return; }
+        let shown = -1;
+        const progress = (p) => { const pct = Math.floor(p * 100); if (pct !== shown && (pct - shown >= 5 || pct === 100)) { shown = pct; say('info', t(prefs.lang, 'pkg.progress', { pct })); } };
+        const r = await session.putPackage(new Uint8Array(await file.arrayBuffer()), progress);
+        const p = r.json?.pending || {};
+        say('info', t(prefs.lang, p.button ? 'pkg.loaded_button' : 'pkg.loaded', { from: p.from || '' }));
       } else if (file) {
         if (node.maxBytes && file.size > node.maxBytes) { say('error', t(prefs.lang, 'file.too_big')); return; }
         say('info', t(prefs.lang, 'file.working'));

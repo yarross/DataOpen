@@ -37,7 +37,8 @@ def test_default_manifest_is_valid_small_and_fully_translated():
 def test_every_control_in_the_default_manifest_is_known_to_the_gateway_and_vice_versa():
     mm = M.Manifest()
     handled = {"assist.on", "assist.strength", "tremor.level", "calib.running", "profile.restore", "pairing.forget",
-               "erase.profile", "factory.reset", "slot.name", "slot.clear", "fw.apply", "fw.rollback"}
+               "erase.profile", "factory.reset", "slot.name", "slot.clear", "fw.apply", "fw.rollback",
+               "pkg.apply", "pkg.discard", "pkg.revert"}
     shown = {k for k, c in mm.by_key.items() if c["type"] in ("toggle", "stepper", "action", "text")}
     assert shown == handled
 

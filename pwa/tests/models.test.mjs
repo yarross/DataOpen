@@ -54,7 +54,7 @@ test('the page keeps no weights: the only file of the device it saves is the pub
 test('the page says in words when the scene help is off and when a model is too heavy, in both languages', () => {
   const status = (key) => manifest.pages.flatMap((p) => p.controls ?? []).find((c) => c.key === key);
   const scene = status('scene.state');
-  assert.deepEqual(Object.keys(scene.map).sort(), ['none', 'ok', 'off', 'warming']);
+  assert.deepEqual(Object.keys(scene.map).sort(), ['none', 'off', 'ok', 'warming']);
   for (const v of Object.values(scene.map)) assert.ok(v.ru.length > 3 && v.en.length > 3 && v.ru !== v.en);
   const model = status('model.state');
   assert.ok(model.map.over_budget.ru && model.map.over_budget.en);

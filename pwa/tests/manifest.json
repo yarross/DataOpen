@@ -427,7 +427,7 @@
           },
           "help": {
             "ru": "Если сцена опаздывает, помощь по экрану выключается, а не мигает. Моторная коррекция тремора работает всегда.",
-            "en": "If the scene is late the screen-aware help switches off instead of flickering. Tremor correction always works."
+            "en": "If the scene is late, screen-aware help switches off instead of flickering. Tremor correction always works."
           }
         },
         {

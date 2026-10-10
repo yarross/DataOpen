@@ -392,6 +392,8 @@ def build_parser() -> argparse.ArgumentParser:
     register_latency(sub)
     from .updates.cli import register as register_updates
     register_updates(sub)
+    from .release.cli import register as register_release
+    register_release(sub)
     return p
 
 

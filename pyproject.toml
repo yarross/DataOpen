@@ -40,7 +40,11 @@ ignore = ["E741", "B905", "B008", "B027"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["E702"]
+"tests/test_acceptance.py" = ["E501"]  # scenario steps read as sentences
+"tests/acc_helpers.py" = ["E501"]
+"tests/test_release.py" = ["E501"]
 "src/dataopen/hw/*" = ["E501"]          # specification tables with prose in the data lines
 "src/dataopen/provisioning/*" = ["E501"]  # the same: records, steps and scenarios carry prose
 "src/dataopen/latency/*" = ["E501"]  # the same: stage tables carry prose in the data lines
 "src/dataopen/updates/*" = ["E501"]  # the same: the reason table carries prose in the data lines
+"src/dataopen/release/*" = ["E501"]  # the same: the registry carries prose in the data lines

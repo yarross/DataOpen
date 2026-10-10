@@ -191,6 +191,7 @@ class Rig:
         self.report_delay_us: list[int] = []  # per routed report: time from `move()` to the step that handled it (docs/LATENCY.md)
         self._enq: dict[int, list[int]] = {}
         self.transcripts: dict[str, list] = {}
+        self.pc_enumerations: list[tuple[int, str, list]] = []   # every enumeration by the PC: (time, "direct" | "bridge", transcript)
         self.front = BridgeFront(self)
         self.module = SimModule(self, asc, tremor, ppc, scene_fn=scene_fn) if module else None
         self.image_built = False
@@ -312,12 +313,14 @@ class Rig:
             self.pc_ready_at = None
             if self.route == "bypass":
                 self.transcripts["direct"] = SimPC.enumerate(self.mouse)
+                self.pc_enumerations.append((t, "direct", self.transcripts["direct"]))
                 self.pc_conn = "direct"
             elif self.route == "bridge" and self.alive and self.pc_never_configures:
                 self.pc_conn = None  # the PC never finishes enumerating us (a host that gave up)
             elif self.route == "bridge" and self.alive:
                 try:
                     self.transcripts["bridge"] = SimPC.enumerate(self.front)
+                    self.pc_enumerations.append((t, "bridge", self.transcripts["bridge"]))
                     self.pc_conn = "bridge"
                 except TimeoutError:
                     self.pc_ready_at = t + 100_000

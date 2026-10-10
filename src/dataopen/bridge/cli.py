@@ -233,6 +233,38 @@ def _build(a) -> int:
     return EXIT_OK
 
 
+DOC = Path(__file__).resolve().parents[3] / "docs" / "TRANSPARENCY.md"
+
+
+def _transparency(a) -> int:
+    """The properties of OS transparency, what the PC can and can not notice, and the freshness of docs/TRANSPARENCY.md."""
+    import re
+
+    from . import transparency as T
+
+    block = re.compile(r"(<!-- fp:(\w+) -->)\n?(.*?)\n?(<!-- /fp:\2 -->)", re.S)
+
+    def render(text: str) -> str:
+        return block.sub(lambda m: m.group(1) + "\n" + T.TABLES[m.group(2)]() + "\n" + m.group(4), text)
+
+    path = Path(a.path) if a.path else DOC
+    if a.check or a.write:
+        text = path.read_text(encoding="utf-8")
+        current = render(text) == text and {m.group(2) for m in block.finditer(text)} == set(T.TABLES)
+        if a.check:
+            print("current" if current else f"{path} is stale: run `dataopen bridge transparency --write`")
+            return EXIT_OK if current else EXIT_FAILED
+        path.write_text(render(text), encoding="utf-8")
+        print(f"written: {path}")
+        return EXIT_OK
+    if a.json:
+        out = {"properties": [vars(p) for p in T.PROPS], "invisible": T.INVISIBLE, "visible": T.VISIBLE}
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+    else:
+        print(T.props_table() + "\n\n" + T.invisible_table() + "\n\n" + T.visible_table())
+    return EXIT_OK
+
+
 def register(sub) -> None:
     s = sub.add_parser("bridge", help="Assistive HID bridge: simulate / bench / size / build (docs/BRIDGE.md)")
     ss = s.add_subparsers(dest="bridge_cmd", required=True)
@@ -255,3 +287,9 @@ def register(sub) -> None:
     d = ss.add_parser("build", help="compile the C core with the system compiler")
     d.add_argument("--out")
     d.set_defaults(fn=_build)
+    t = ss.add_parser("transparency", help="OS transparency: the properties and what the PC can and can not notice (docs/TRANSPARENCY.md)")
+    t.add_argument("--json", action="store_true")
+    t.add_argument("--check", action="store_true", help="is docs/TRANSPARENCY.md current")
+    t.add_argument("--write", action="store_true", help="refresh the generated tables in docs/TRANSPARENCY.md")
+    t.add_argument("--path")
+    t.set_defaults(fn=_transparency)

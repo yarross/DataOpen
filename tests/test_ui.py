@@ -341,6 +341,8 @@ def test_the_service_builds_snapshots_releases_every_frame_and_a_failing_detecto
         _StubDetector(fail_at=(4,)),
         UiSceneBuilder(GEOM_1080P, SceneConfig(warmup_frames=0)),
         lambda s, f: snaps.append((f.frame_id, s)),
+        latest_only=False,
+        max_age_ms=None,  # the frames carry virtual timestamps and every one of them is wanted
     )
     while svc.step(0.01):
         pass
@@ -355,7 +357,7 @@ def test_the_service_follows_a_mode_change_announced_in_the_frame_metadata():
     g2 = Geometry(0, 0, 2560, 1440, 640, 360, 0, 140, 640, 640)
     snaps = []
     b = UiSceneBuilder(GEOM_1080P, SceneConfig(warmup_frames=0))
-    svc = UiService(src, _StubDetector(), b, lambda s, f: snaps.append(s))
+    svc = UiService(src, _StubDetector(), b, lambda s, f: snaps.append(s), latest_only=False, max_age_ms=None)
     src.push(np.zeros((640, 640, 3), np.uint8), 0, 0, {"geometry": GEOM_1080P})
     src.push(np.zeros((640, 640, 3), np.uint8), 1, 7000, {"geometry": g2})
     while svc.step(0.01):
@@ -430,7 +432,7 @@ def test_frames_to_service_to_scene_frames_to_the_real_bridge_core_brake_the_app
     from dataopen.assist.tremor_fixed import FixedTremorParams
     from dataopen.bridge.sim import Rig
     from dataopen.bridge.sim_usb import SimMouse
-    from dataopen.ui.scene import BridgeScenePublisher
+    from dataopen.ui.service import scene_service
 
     ap, tp = _prof("overshooter")
     r = Rig(SimMouse("m16"), asc=FixedParams.from_params(ap), tremor=FixedTremorParams.from_params(tp))
@@ -445,8 +447,7 @@ def test_frames_to_service_to_scene_frames_to_the_real_bridge_core_brake_the_app
 
     src = QueueSource(4)
     builder = UiSceneBuilder(GEOM_1080P)  # default warm-up: what is there from the start did not 'appear'  # noqa: E501
-    pub = BridgeScenePublisher(builder, lambda f: r.module.send(r.t, [f]))
-    svc = UiService(src, Gt(), builder, pub)
+    svc, pub = scene_service(src, Gt(), builder, lambda f: r.module.send(r.t, [f]), now=lambda: r.t)  # v1 defaults, virtual time
     ks = []
     carry = 0.0
     for k in range(500):

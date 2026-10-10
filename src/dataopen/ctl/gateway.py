@@ -146,6 +146,7 @@ class Gateway:
             self.fw.reboot()                    # what the bootloader decides at this boot (counts a boot of an unconfirmed update)
             self.fw.save(self.fw_dir)
         self.pkg = PackageManager(self)               # channel B: sealed packages for the slots (docs/UPDATES.md)
+        self.scene_state = "none"                     # the scene path's health, set by the module (set_scene_health); shown on the phone
         # bridge side
         self.gen_counter = 0
         self.gen = {"asc": 0, "tremor": 0}
@@ -547,7 +548,14 @@ class Gateway:
                 "trial.left_s": self._trial_left(now),
                 "pairing.open": now < self.pairing_until, "slot.active": self.active, "slot.name": self.slot.name,
                 **{f"slot.{s.k}.name": s.name for s in self.slotset},
-                "fw.version": self._fw_version(), "fw.state": self._fw_state(), **self.pkg.state()}
+                "fw.version": self._fw_version(), "fw.state": self._fw_state(), "scene.state": self.scene_state, **self.pkg.state()}
+
+    def set_scene_health(self, state: str) -> None:
+        """The module tells the gateway how the scene path is doing (ui/health.py);
+        the phone shows it in words. Nothing is decided here."""
+        if state not in RS.SCENE_STATES:
+            raise ValueError(f"not a scene state: {state!r}")
+        self.scene_state = state
 
     def _fw_version(self) -> int:
         if self.fw is None:

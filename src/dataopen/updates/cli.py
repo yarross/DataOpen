@@ -97,7 +97,12 @@ def _check_model(a) -> int:
         return EXIT_FAILED
     print(json.dumps({"ok": True, "ops": found["ops"], "opset": found["opset"], "size": len(raw), "nodes": found["nodes"],
                       "gmacs": round(found["macs"] / 1e9, 3), "input": found["convention"], "outputs": found["outputs"],
+                      "est_infer_ms": found["est_infer_ms"],
                       "limits": {"max_gmacs": MD.MAX_MACS / 1e9, "max_nodes": MD.MAX_NODES, "max_bytes": MD.MODEL_MAX}}, indent=2))
+    if not found["est_infer_ms"]["fits"]:
+        e = found["est_infer_ms"]
+        print(f"warning: over the latency budget: about {e['p95']} ms (p95) on the {e['backend']} against {e['budget_p95']} ms. The device keeps such "
+              f"a model but does not run it (model.state over_budget). A rough estimate from the work alone (docs/LATENCY.md).")
     return EXIT_OK
 
 

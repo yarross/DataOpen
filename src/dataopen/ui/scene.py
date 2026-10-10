@@ -193,18 +193,55 @@ class UiSceneBuilder:
 
 class BridgeScenePublisher:
     """`on_snapshot` for `UiService`: sends the scene to the HID bridge as a BridgeLink SCENE frame (`send` writes one frame to the link).
-    Nothing is sent when there is no pointer or no target: the bridge then lets the old scene expire (100 ms) and gives no help. The capture time
-    is converted with `clock` (a `ClockSync` fed by TSYNC replies) when the module's clock is not the bridge's."""  # noqa: E501
+    The capture time is converted with `clock` (a `ClockSync` fed by TSYNC replies) when the module's clock is not the bridge's.
 
-    def __init__(self, builder: UiSceneBuilder, send, clock=None) -> None:
+    What it does NOT send, on purpose (docs/LATENCY.md):
+      * a scene that is late (`health`, ui/health.py): the bridge would use it at 80-100 ms of age, or not at all, and an age that wanders
+        around its 100 ms TTL makes the help blink. While the scene help is off nothing is sent; the bridge lets its last scene expire.
+    What it sends that the old version did not:
+      * ONE empty scene when the targets are gone (after `empty_after` empty snapshots in a row) or when the help is switched off: the
+        bridge then drops the old scene now, not up to 100 ms later (a one-frame phantom lives one cycle, not the whole TTL).
+    `gate=False` (and no `health`): no gating at all (a test of the bare publisher)."""
+
+    def __init__(self, builder: UiSceneBuilder, send, clock=None, health=None, now_us=None, gate: bool = True,
+                 empty_after: int = 2) -> None:
+        from ..runtime.frames import now_us as _now
+        from .health import SceneHealth
+
         self.builder, self.send, self.clock = builder, send, clock
-        self.sent = 0
+        self.health = health if health is not None else (SceneHealth() if gate else None)
+        self.now_us = now_us or _now
+        self.empty_after = empty_after
+        self.sent = self.retracted = 0
+        self._had = False
+        self._empty_run = 0
+
+    def _send_empty(self, tcap: int) -> None:
+        from ..bridge.protocol import scene_frame
+
+        self.send(scene_frame(tcap, []))
+        self.retracted += 1
+        self._had = False
 
     def __call__(self, snap: Snapshot, frame=None) -> None:
         to_bridge = self.clock.to_bridge if self.clock is not None else (lambda t: t)
         tcap, objs = self.builder.bridge_scene(snap, to_bridge)
+        if self.health is not None:
+            now = self.now_us()
+            ok = self.health.scene((now - snap.t_capture_us) / 1000.0, now / 1000.0)
+            if self.health.take_announcement():          # the help has just been switched off: end it now
+                if self._had:
+                    self._send_empty(tcap)
+                return
+            if not ok:
+                return
         if objs:
             from ..bridge.protocol import scene_frame
 
             self.send(scene_frame(tcap, objs))
             self.sent += 1
+            self._had, self._empty_run = True, 0
+        elif self._had:
+            self._empty_run += 1
+            if self._empty_run >= self.empty_after:
+                self._send_empty(tcap)

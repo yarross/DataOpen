@@ -400,6 +400,37 @@
           }
         },
         {
+          "id": "scene_state",
+          "type": "status",
+          "key": "scene.state",
+          "map": {
+            "none": {
+              "ru": "Нет данных",
+              "en": "No data"
+            },
+            "warming": {
+              "ru": "Прогревается",
+              "en": "Warming up"
+            },
+            "ok": {
+              "ru": "Работает",
+              "en": "Working"
+            },
+            "off": {
+              "ru": "Выключена: компьютер не успевает",
+              "en": "Off: the computer cannot keep up"
+            }
+          },
+          "label": {
+            "ru": "Помощь по экрану (сцена)",
+            "en": "Screen-aware help (scene)"
+          },
+          "help": {
+            "ru": "Если сцена опаздывает, помощь по экрану выключается, а не мигает. Моторная коррекция тремора работает всегда.",
+            "en": "If the scene is late the screen-aware help switches off instead of flickering. Tremor correction always works."
+          }
+        },
+        {
           "id": "model_state",
           "type": "status",
           "key": "model.state",
@@ -415,6 +446,10 @@
             "needs_system": {
               "ru": "Нужна новая система",
               "en": "Needs a newer system"
+            },
+            "over_budget": {
+              "ru": "Слишком тяжёлая: не используется",
+              "en": "Too heavy for this device: not used"
             }
           },
           "label": {

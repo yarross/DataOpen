@@ -97,8 +97,8 @@ def _service(**kw):
     return svc, det, rel
 
 
-def test_by_default_the_service_takes_the_oldest_frame_as_before():
-    svc, det, rel = _service()
+def test_the_original_fifo_behaviour_is_still_available_by_name():
+    svc, det, rel = _service(latest_only=False, max_age_ms=None)           # the original behaviour is still there, switched off by name
     assert svc.step(0.0) and det.seen == [0] and rel == [0]
     assert svc.trace.age_ms == [5.0] and svc.trace.ready_ms == [4.9]
 
@@ -110,7 +110,7 @@ def test_latest_only_takes_the_newest_and_lets_go_of_the_rest():
 
 
 def test_a_frame_older_than_the_limit_is_dropped_unseen_and_counted():
-    svc, det, rel = _service(max_age_ms=4.0)
+    svc, det, rel = _service(max_age_ms=4.0, latest_only=False)
     assert svc.step(0.0) and svc.step(0.0)               # frames 0 (5 ms old) and 1 (4 ms old, not above the limit)
     assert det.seen == [1] and svc.trace.stale_dropped == 1 and rel == [0, 1]
     s = svc.trace.summary()

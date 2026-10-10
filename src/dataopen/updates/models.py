@@ -19,6 +19,7 @@ import hashlib
 import json
 from typing import Optional
 
+from ..ui.policy import ACTIVE_BACKEND, V1, est_infer_ms
 from ..ui.taxonomy import NAMES, STRIDES, NotAUiModel, require_ui_layout
 from .channels import UpdateError
 
@@ -193,6 +194,10 @@ def check_model(raw: bytes, card, inspector: Optional[bool] = True) -> dict:
     """The whole check; `inspector=False` is for tests of the card alone and is never used by the device."""
     check_card(card, raw)
     found = inspect_graph(raw, card) if inspector else {}
+    if "macs" in found:                     # what the budget says about it: ROUGH, from the work alone (ui/policy.py); the guard in ui/health.py checks it
+        p50, p95 = est_infer_ms(found["macs"])
+        found["est_infer_ms"] = {"backend": ACTIVE_BACKEND, "p50": round(p50, 1), "p95": round(p95, 1), "budget_p95": V1.infer_budget_ms,
+                                 "fits": p95 <= V1.infer_budget_ms}
     return {"card": card, **found}
 
 

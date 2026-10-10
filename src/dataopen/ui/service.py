@@ -18,9 +18,11 @@ from typing import Callable, Optional
 import numpy as np
 
 from ..runtime.frames import Frame, FrameSource, now_us
+from .health import SceneHealth
 from .infer import decode
+from .policy import V1, ScenePolicy
+from .scene import BridgeScenePublisher, Det, Snapshot, UiSceneBuilder
 from .taxonomy import STRIDES
-from .scene import Det, Snapshot, UiSceneBuilder
 from .taxonomy import NAMES, require_ui_layout  # noqa: F401
 
 
@@ -98,15 +100,22 @@ class LatencyTrace:
 
 
 class UiService:
-    """`max_age_ms`: a frame older than this when it is taken is dropped, unseen (None: never, the original behaviour). `latest_only`:
-    when the source holds several frames, take the newest and release the older ones (False: the oldest first, the original behaviour; a
-    queue that is deeper than the detector is fast then makes the picture `capacity x frame period` old: docs/LATENCY.md). `clock`
-    (microseconds) makes the trace testable in virtual time."""
+    """The defaults are the safe ones for v1 (`ui.policy.V1`, docs/LATENCY.md):
+
+    * `latest_only=True`: when the source holds several frames, take the newest and release the older ones unseen. A FIFO of 4 behind an
+      11 ms detector makes the picture ~44 ms old and pushes the worst case past the bridge's 100 ms TTL.
+    * `max_age_ms=35`: a frame older than that when it is taken is dropped unseen; the pipeline is behind and catches up instead of
+      working on the past.
+
+    Pass `latest_only=False` / `max_age_ms=None` for the original behaviour (tests of the old pipeline do). `clock` (microseconds) and
+    `perf` (seconds) make the trace testable in virtual time. `health`: the scene path's state machine (ui/health.py) is told about dropped
+    frames and inference times."""
 
     def __init__(self, source: FrameSource, detector, builder: UiSceneBuilder, on_snapshot: Callable[[Snapshot, Frame], None],
-                 max_age_ms: Optional[float] = None, latest_only: bool = False, clock: Callable[[], int] = now_us) -> None:
+                 max_age_ms: Optional[float] = V1.max_age_ms, latest_only: bool = V1.latest_only, clock: Callable[[], int] = now_us,
+                 health: Optional[SceneHealth] = None, perf: Callable[[], float] = time.perf_counter) -> None:
         self.source, self.detector, self.builder, self.on_snapshot = source, detector, builder, on_snapshot
-        self.max_age_ms, self.latest_only, self.clock = max_age_ms, latest_only, clock
+        self.max_age_ms, self.latest_only, self.clock, self.health, self.perf = max_age_ms, latest_only, clock, health, perf
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self.frames = self.errors = 0
@@ -137,6 +146,8 @@ class UiService:
         age_ms = (now - f.ts_us) / 1000.0
         if self.max_age_ms is not None and age_ms > self.max_age_ms:
             self.trace.stale_dropped += 1
+            if self.health is not None:
+                self.health.stale_frame(now / 1000.0)
             f.release()
             return True
         try:
@@ -146,14 +157,16 @@ class UiService:
             g = f.meta.get("geometry")
             if g is not None and g != self.builder.g:
                 self.builder.set_geometry(g)  # a mode change: tracks from the old geometry mean nothing now
-            t0 = time.perf_counter()
+            t0 = self.perf()
             dets = self.detector.detect(f)
-            t1 = time.perf_counter()
+            t1 = self.perf()
             snap = self.builder.update(f.ts_us, dets)
-            t2 = time.perf_counter()
+            t2 = self.perf()
             self.latency_ms.append((t2 - t0) * 1000)
             self.trace.detect_ms.append((t1 - t0) * 1000)
             self.trace.update_ms.append((t2 - t1) * 1000)
+            if self.health is not None:
+                self.health.detect((t1 - t0) * 1000)
             self.frames += 1
             self.on_snapshot(snap, f)
         except Exception as e:  # no snapshot = no scene = no help; never a wrong one
@@ -166,3 +179,15 @@ class UiService:
     def _run(self) -> None:
         while not self._stop.is_set():
             self.step(0.1)
+
+
+def scene_service(source: FrameSource, detector, builder: UiSceneBuilder, send, clock=None, now: Callable[[], int] = now_us,
+                  policy: ScenePolicy = V1) -> tuple[UiService, BridgeScenePublisher]:
+    """The scene path as v1 ships it: the service and the publisher share ONE `SceneHealth`, so a pipeline that is behind (frames dropped
+    for their age, a slow detector, scenes ready too late) switches the scene help off in one place and back on with hysteresis.
+    `send` writes one BridgeLink frame; `clock` is the module/bridge `ClockSync` (or None); `now` is the module's clock in microseconds."""
+    health = SceneHealth(policy)
+    svc = UiService(source, detector, builder, lambda snap, frame: pub(snap, frame), max_age_ms=policy.max_age_ms,
+                    latest_only=policy.latest_only, clock=now, health=health)
+    pub = BridgeScenePublisher(builder, send, clock, health=health, now_us=now)
+    return svc, pub

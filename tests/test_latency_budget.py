@@ -55,15 +55,15 @@ def test_the_default_confirmation_is_the_trackers_not_a_copy():
 
 
 def test_the_frame_period_and_the_roi_come_from_the_video_timing():
-    a, b = ids(B.BY_KEY["npu-latest"]), ids(B.with_changes(B.BY_KEY["npu-latest"], mode="1920x1080@60"))
+    a, b = ids(B.BY_KEY["v1-npu"]), ids(B.with_changes(B.BY_KEY["v1-npu"], mode="1920x1080@60"))
     assert b["B1"].typ > 2 * a["B1"].typ                                  # 1080p60 scans a line in 14.8 us, 1080p144 in 6.0 us
-    full = ids(B.with_changes(B.BY_KEY["npu-latest"], capture="frame"))["B1"]
+    full = ids(B.with_changes(B.BY_KEY["v1-npu"], capture="frame"))["B1"]
     assert full.typ > a["B1"].typ                                         # waiting for the whole frame is later than for the 640x640 ROI
 
 
 def test_the_queue_depth_is_read_from_the_source_class():
     assert B.queue_capacity() == 4 == QueueSource().capacity
-    assert f"ёмкость {B.queue_capacity()}" in ids(B.BY_KEY["as-built"])["B3"].ref
+    assert f"ёмкость {B.queue_capacity()}" in ids(B.BY_KEY["legacy-fifo"])["B3"].ref
 
 
 @needs_cc
@@ -74,7 +74,7 @@ def test_the_scene_ttl_and_the_poll_limits_are_read_from_the_bridge_core():
     cfg = B.bridge_cfg()
     assert cfg["scene_ttl_ms"] == c.scene_ttl_ms and cfg["slow_poll_us"] == c.slow_poll_us and cfg["split_poll_us"] == c.split_poll_us
     assert B.usb_mode(125) == "SLOW" and B.usb_mode(1000) == "DIRECT" and B.usb_mode(8000) == "SPLIT"
-    assert B.summary(B.BY_KEY["npu-latest"])["ttl_ms"] == c.scene_ttl_ms
+    assert B.summary(B.BY_KEY["v1-npu"])["ttl_ms"] == c.scene_ttl_ms
 
 
 def test_the_input_path_stays_inside_the_target_and_the_tremor_filter_is_shown_apart():
@@ -87,18 +87,18 @@ def test_the_input_path_stays_inside_the_target_and_the_tremor_filter_is_shown_a
 
 
 def test_the_scene_path_misses_the_ttl_as_built_and_meets_it_with_latest_only():
-    assert B.summary(B.BY_KEY["as-built"])["ttl_margin_ms"] < 0                           # the finding: FIFO(4) + CPU detector, worst case
-    for k in ("cpu-latest", "npu-latest", "npu-latest-c1", "cpu-60", "npu-4k60"):
+    assert B.summary(B.BY_KEY["legacy-fifo"])["ttl_margin_ms"] < 0              # the finding: FIFO(4) + CPU detector, worst case
+    for k in ("cpu-latest", "v1-npu", "npu-latest-c1", "cpu-60", "npu-4k60"):
         assert B.summary(B.BY_KEY[k])["ttl_margin_ms"] > 0, k
     assert B.summary(B.BY_KEY["npu-latest-c1"])["B"][2] <= 12.0                           # the 10-12 ms target is reachable only here
-    assert B.summary(B.BY_KEY["npu-latest"])["B"][2] > 12.0 and B.summary(B.BY_KEY["cpu-latest"])["B"][1] > 12.0
-    for k in ("cpu-latest", "npu-latest", "npu-latest-c1"):
+    assert B.summary(B.BY_KEY["v1-npu"])["B"][2] > 12.0 and B.summary(B.BY_KEY["cpu-latest"])["B"][1] > 12.0
+    for k in ("cpu-latest", "v1-npu", "npu-latest-c1"):
         assert B.summary(B.BY_KEY[k])["guard_margin_ms"] > 0
 
 
 def test_the_policy_group_is_read_from_the_asc_configuration():
     a = AscConfig()
-    c = ids(B.BY_KEY["as-built"])
+    c = ids(B.BY_KEY["legacy-fifo"])
     assert c["C1"].typ == a.on_ms and c["C2"].lo == a.t_min_ms
     assert c["C4"].hi == pytest.approx((1 - a.k_floor) / a.slew_per_s * 1000)
     assert c["C2"].typ > a.t_min_ms and c["C2"].typ == pytest.approx(225.3, abs=1.0)    # the 'tremor' persona's T_lo from build_profile

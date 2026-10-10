@@ -33,7 +33,9 @@ def test_the_real_exported_model_follows_the_contract_and_costs_what_the_limit_a
     raw = exported(tmp_path)
     found = MD.check_model(raw, MD.card_from_onnx(raw, "real"))
     assert found["outputs"] == ["p3", "p4", "p5"] and found["convention"] == "uint8 NHWC RGB"
-    assert 0.3e9 < found["macs"] < 2.5e9                      # about 1 GMAC: the figure the 4 GMAC limit (an assumption) is set against
+    from dataopen.ui import policy as PL
+    assert found["macs"] == pytest.approx(PL.REF_MACS, rel=0.01)       # the calibration constant is this network, counted by the device's own counter
+    assert found["est_infer_ms"]["p95"] == pytest.approx(PL.INFER_MS["cpu"][1], abs=0.2) and found["est_infer_ms"]["fits"]
     assert found["nodes"] < MD.MAX_NODES and len(raw) < MD.MODEL_MAX
 
 

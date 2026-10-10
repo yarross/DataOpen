@@ -83,7 +83,7 @@ RULES: tuple[Rule, ...] = (
          "единственная производная профиля, которая выходит из устройства; список закреплён тестом"),
     Rule("serial", "серийный номер, hw_id, стадия жизненного цикла, порог анти-отката", METADATA, "да", False,
          "OTP / заблокированный слот secure element", KEPT, KEPT, KEPT, KEPT),
-    Rule("versions", "версии прошивки, банки, состояние обновления, состояние модели (нет / ok / needs_system)", METADATA, "да", False,
+    Rule("versions", "версии прошивки, банки, состояние обновления, состояние модели (нет / ok / needs_system / over_budget), состояние пути сцены (none / warming / ok / off)", METADATA, "да", False,
          "fw/, слот k", KEPT, KEPT, KEPT, KEPT, "состояние модели меняется с её удалением"),
     Rule("model_card", "карточка модели: имя, версия, классы, размер, короткий id (8 байт хэша)", METADATA, "да", False,
          "слот k, model.json", ERASED, ERASED, ERASED, ERASED, "полный SHA-256 весов наружу не выходит"),
@@ -119,12 +119,13 @@ class ResidencyViolation(Exception):
 _SLOT_KEY = re.compile(rf"^slot\.[0-{P.SLOT_COUNT - 1}]\.name$")
 STATE_KEYS = ("assist.on", "assist.strength", "tremor.level", "calib.running", "profile.fill", "profile.layers", "profile.tremor",
               "device.id", "device.serial", "trusted.count", "trial.left_s", "pairing.open", "slot.active", "slot.name", "fw.version",
-              "fw.state", "pkg.state", "pkg.from", "pkg.kinds", "model.state", "model.name", "model.version", "model.from")
+              "fw.state", "pkg.state", "pkg.from", "pkg.kinds", "model.state", "model.name", "model.version", "model.from", "scene.state")
 PROFILE_LAYERS = ("none", "asc", "tremor", "both")            # the only values a derived profile field can have
 PROFILE_TREMOR = ("collecting", "ready", "not_needed")
 FW_STATES = ("unsupported", "current", "staged", "trial")
 PKG_STATES = ("none", "receiving", "pending")
-MODEL_STATES = ("none", "ok", "needs_system")
+MODEL_STATES = ("none", "ok", "needs_system", "over_budget")
+SCENE_STATES = ("none", "warming", "ok", "off")      # the scene path's health (ui/health.py), told to the gateway by the module
 
 MODEL_CARD_PUBLIC = ("format", "taxonomy", "classes", "n_keypoints", "input_size", "opset", "name", "version", "size", "id")
 
@@ -164,7 +165,7 @@ def scrub_state(tree: dict, where: str = "state") -> dict:
             raise ResidencyViolation(f"{where}.{k}: not a state key")
         _scalar(v, f"{where}.{k}")
     for k, allowed in (("profile.layers", PROFILE_LAYERS), ("profile.tremor", PROFILE_TREMOR), ("fw.state", FW_STATES),
-                       ("pkg.state", PKG_STATES), ("model.state", MODEL_STATES)):
+                       ("pkg.state", PKG_STATES), ("model.state", MODEL_STATES), ("scene.state", SCENE_STATES)):
         if k in tree and tree[k] not in allowed:
             raise ResidencyViolation(f"{where}.{k}: {tree[k]!r} is not one of {allowed}")
     if "profile.fill" in tree and not (_is_int(tree["profile.fill"]) and 0 <= tree["profile.fill"] <= 100):

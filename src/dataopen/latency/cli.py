@@ -91,7 +91,7 @@ def register(sub) -> None:
     p = sub.add_parser("latency", help="end-to-end latency budget of the assistive path and how to measure it (docs/LATENCY.md)")
     ps = p.add_subparsers(dest="latency_cmd", required=True)
     s = ps.add_parser("stages", help="the stages of one scenario with the basis of each number")
-    s.add_argument("scenario", nargs="?", default="as-built")
+    s.add_argument("scenario", nargs="?", default="legacy-fifo")
     s.add_argument("--json", action="store_true")
     s.set_defaults(fn=_stages)
     b = ps.add_parser("budget", help="all scenarios side by side: input path A, scene path B, margin to the scene TTL")

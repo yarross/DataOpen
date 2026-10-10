@@ -17,18 +17,18 @@ def run(*argv):
 def test_budget_prints_every_scenario_and_the_json_has_the_margins(capsys):
     assert run("budget") == 0
     out = capsys.readouterr().out
-    assert "as-built" in out and "npu-latest-c1" in out and "помощь пропадает" in out
+    assert "legacy-fifo" in out and "npu-latest-c1" in out and "помощь пропадает" in out
     assert run("budget", "--json") == 0
     rows = json.loads(capsys.readouterr().out)
-    assert {r["scenario"] for r in rows} >= {"as-built", "cpu-latest", "npu-latest", "npu-latest-c1"}
+    assert {r["scenario"] for r in rows} >= {"legacy-fifo", "cpu-latest", "v1-npu", "npu-latest-c1"}
     assert all({"A_pipeline", "A_total", "B", "ttl_margin_ms", "guard_margin_ms"} <= set(r) for r in rows)
 
 
 def test_stages_name_the_basis_and_an_unknown_scenario_is_a_usage_error(capsys):
-    assert run("stages", "npu-latest") == 0
+    assert run("stages", "v1-npu") == 0
     out = capsys.readouterr().out
     assert "не измерено" in out and "B7" in out and "A4" in out
-    assert run("stages", "npu-latest", "--json") == 0
+    assert run("stages", "v1-npu", "--json") == 0
     st = json.loads(capsys.readouterr().out)
     assert {s["id"] for s in st} >= {"B1", "B4", "B7", "A1", "A3", "A4", "C2"} and all(s["basis"] for s in st)
     assert run("stages", "nope") == 2
@@ -63,7 +63,7 @@ def test_the_document_matches_the_code_it_is_generated_from():
     heads = ("## 0. Честный статус", "## 2. Критический путь", "## 3. Бюджет", "## 5. Физические", "## 6. Методика измерения")
     for h in heads + ("## 7. Главные риски",):
         assert h in text
-    for needle in ("как собрано", "scene_ttl_ms", "не измерено", "latest_only"):
+    for needle in ("умолчания v1", "scene_ttl_ms", "не измерено", "latest_only"):
         assert needle in text
 
 

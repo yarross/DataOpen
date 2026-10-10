@@ -20,7 +20,8 @@ from .service import OrtUiDetector
 
 def detector_for_slot(gw, k: Optional[int] = None, conf: float = 0.35, threads: int = 2) -> Optional[OrtUiDetector]:
     """The detector for slot `k`'s own model (the active slot by default); None when the slot has no model of its own, or the system
-    running is older than the model needs (`needs_system`)."""
+    running is older than the model needs (`needs_system`), or the model is heavier than the latency budget allows (`over_budget`: it is kept,
+    not run; docs/LATENCY.md)."""
     store = ModelStore(gw.slotset[gw.active if k is None else k])
     if store.state(gw._fw_version()) != "ok":
         return None

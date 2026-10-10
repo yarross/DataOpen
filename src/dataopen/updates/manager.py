@@ -25,6 +25,7 @@ from ..ctl.manifest import validate_manifest
 from ..ctl.residency import public_card
 from ..ctl.seal import SlotData
 from ..ctl.vault import VaultError
+from ..ui.policy import fits_budget
 from . import models as MD
 from .channels import PKG_SCHEMA, UpdateError
 from .package import MAX_PACKAGE, PREFIX, Opened, PackageReader, open_package
@@ -122,7 +123,10 @@ class ModelStore:
         m = self.info()
         if m is None:
             return "none"
-        return "needs_system" if int(m.get("min_fw", 0)) > fw_version else "ok"
+        if int(m.get("min_fw", 0)) > fw_version:
+            return "needs_system"
+        macs = m.get("macs")           # a model stored before the budget existed has no figure: it is not judged by one
+        return "over_budget" if isinstance(macs, int) and not fits_budget(macs) else "ok"
 
 
 class PackageManager:
@@ -282,7 +286,7 @@ class PackageManager:
         k = o.slot if o.slot is not None else gw.active
         if o.model is not None:
             ModelStore(gw.slotset[k]).put(o.model, {"card": o.model_card, "min_fw": o.min_fw, "from": o.sender_id, "pkg": o.pkg_id.hex(), "seq": o.seq,
-                                                   "self": o.is_self})
+                                                   "self": o.is_self, "macs": MD.check_model(o.model, o.model_card)["macs"]})
             self.touch()
             self.fault("after_model")
         if o.profile is not None or o.tuning is not None or o.ui_manifest is not None or o.name:

@@ -50,7 +50,7 @@
 | **список доверенных отправителей, счётчики повтора** | personal | только число | **нет** | trust.a/.b под ключом диска | kept | erased | erased | erased |
 | **готовность профиля: заполненность 0..100, готовые слои, признак «дрожь слишком мала»** | derived | три поля состояния с фиксированными значениями | **нет** | считается из профиля при запросе | - | - | - | - |
 | **серийный номер, hw_id, стадия жизненного цикла, порог анти-отката** | metadata | да | **нет** | OTP / заблокированный слот secure element | kept | kept | kept | kept |
-| **версии прошивки, банки, состояние обновления, состояние модели (нет / ok / needs_system)** | metadata | да | **нет** | fw/, слот k | kept | kept | kept | kept |
+| **версии прошивки, банки, состояние обновления, состояние модели (нет / ok / needs_system / over_budget), состояние пути сцены (none / warming / ok / off)** | metadata | да | **нет** | fw/, слот k | kept | kept | kept | kept |
 | **карточка модели: имя, версия, классы, размер, короткий id (8 байт хэша)** | metadata | да | **нет** | слот k, model.json | erased | erased | erased | erased |
 | **карточка устройства: открытые ключи, номер, цепочка производителя** | public | да (card_get) | да, только открытое | вычисляется из ключей | kept | kept | replaced | replaced |
 <!-- /fp:rules -->
@@ -104,6 +104,7 @@
 | `model.name` | metadata |
 | `model.version` | metadata |
 | `model.from` | metadata |
+| `scene.state` | metadata |
 | `slot.<k>.name` | personal |
 <!-- /fp:state -->
 

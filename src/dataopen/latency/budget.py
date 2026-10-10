@@ -21,6 +21,7 @@ from typing import Optional
 
 from ..assist.params import AscConfig
 from ..runtime.frames import QueueSource
+from ..ui.policy import INFER_BUDGET_MS, INFER_MS, V1  # noqa: F401  (INFER_MS: the numbers moved there, one owner)
 from ..ui.scene import SceneConfig
 from ..video import timing as VT
 from . import measure as M
@@ -40,9 +41,6 @@ FLOORS = {
 }
 GROUPS = {"A": "ввод: мышь → отчёт в ПК", "B": "сцена: объект на кабеле → мост знает цель", "C": "политика: как быстро помощь вправе действовать"}
 
-# inference of the UI network, ms (p50, p95): the CPU numbers are a documented host measurement (docs/UIDET.md, ONNX Runtime, 4 threads);
-# the NPU numbers are a TARGET: nothing was run on an NPU
-INFER_MS = {"cpu": (11.0, 16.0), "npu": (3.0, 4.0)}
 UPDATE_MS = 0.3  # decode + NMS + tracker: an estimate (the host measurement is `UiService.trace.update_ms`)
 CAPTURE_TAIL_MS = {"stream": 0.02, "frame": 0.5}  # work after the last needed line: VIDEO.md (host 9-34 us; whole-frame path 0.3..1 ms)
 SPI_FRAME_BYTES, SPI_HZ_ASSUMED = 128, 10_000_000  # the link frame size is in code (link.h); the SPI clock is NOT defined anywhere
@@ -85,11 +83,12 @@ class Scenario:
 
 
 SCENARIOS = (
-    Scenario("as-built", "как собрано: CPU-детектор, очередь FIFO(4), 1080p144", capture="frame"),
-    Scenario("cpu-latest", "CPU-детектор, только свежий кадр", capture="stream", queue="latest"),
-    Scenario("npu-latest", "цель: NPU-детектор, только свежий кадр", capture="stream", detector="npu", queue="latest"),
-    Scenario("npu-latest-c1", "NPU, свежий кадр, подтверждение за 1 кадр", capture="stream", detector="npu", queue="latest", confirm_hits=1),
-    Scenario("cpu-60", "CPU-детектор, FIFO(4), 1080p60", mode="1920x1080@60", capture="frame"),
+    Scenario("legacy-fifo", "прежние умолчания: CPU-детектор, очередь FIFO(4), 1080p144 (находка human-factors)", capture="frame", queue="fifo"),
+    Scenario("v1-default", "умолчания v1: CPU-детектор, только свежий кадр, подтверждение за 2 кадра, 1080p144", capture="frame", queue="latest"),
+    Scenario("cpu-latest", "умолчания v1 + потоковая подготовка ROI (не реализована)", capture="stream", queue="latest"),
+    Scenario("v1-npu", "цель: NPU-детектор, только свежий кадр, подтверждение за 2 кадра", capture="stream", detector="npu", queue="latest"),
+    Scenario("npu-latest-c1", "вариант: NPU, подтверждение за 1 кадр (нужны данные A-4)", capture="stream", detector="npu", queue="latest", confirm_hits=1),
+    Scenario("cpu-60", "умолчания v1 при 1080p60", mode="1920x1080@60", capture="frame", queue="latest"),
     Scenario("npu-4k60", "NPU, свежий кадр, 4K60", mode="3840x2160@60", capture="stream", detector="npu", queue="latest"),
     Scenario("slow-mouse", "мышь 125 Гц (SLOW), всё остальное — цель", detector="npu", queue="latest", mouse_hz=125.0),
 )
@@ -250,16 +249,72 @@ def total(sc: Scenario, group: str) -> tuple[float, float, float]:
     return sum(s.lo for s in ss), sum(s.typ for s in ss), sum(s.hi for s in ss)
 
 
+SAFETY_MARGIN_MS = 10.0   # kept between the worst scene age at USE and the bridge's TTL
+
+
+def _b(sc: Scenario, group: str = "B") -> dict:
+    return {s.id: s for s in stages(sc) if s.group == group}
+
+
+def refresh_gap_ms(sc: Scenario, infer_ms: Optional[float] = None) -> float:
+    """How long the bridge keeps using one scene before the next one replaces it: the detection cycle (inference + tracker), but not shorter
+    than the frame period. The scene is that much OLDER by the time of its last use."""
+    m = VT.mode(sc.mode)
+    infer = infer_ms if infer_ms is not None else INFER_MS[sc.detector][1]
+    return max(m.frame_time_us / 1000.0, infer + UPDATE_MS)
+
+
+def healthy_age_hi_ms(sc: Scenario) -> float:
+    """The largest age a frame has when the detector TAKES it in a healthy pipeline: cable -> ROI -> prepared -> waited for the detector."""
+    b = _b(sc)
+    return b["B1"].hi + b["B2"].hi + b["B3"].hi
+
+
+def safe_max_age_ms(sc: Scenario) -> float:
+    """The largest `max_age_ms` that still lets a frame taken at that age reach the bridge in time: the TTL, minus the margin, minus the
+    use-time gap, minus everything after the take (inference, tracker, confirmation, SPI, the bridge's tick)."""
+    b = _b(sc)
+    after = sum(b[k].hi for k in ("B4", "B5", "B6", "B7", "B8"))
+    return bridge_cfg()["scene_ttl_ms"] - SAFETY_MARGIN_MS - refresh_gap_ms(sc) - after
+
+
+def max_infer_p95_ms(sc: Scenario) -> float:
+    """The largest p95 inference time at which the scene's age at USE (B worst + the refresh gap) stays `SAFETY_MARGIN_MS` under the TTL.
+    Found by bisection on the same stage model; this is where `ui.policy.INFER_BUDGET_MS` comes from."""
+    hits = sc.confirm_hits if sc.confirm_hits is not None else SceneConfig().confirm_hits
+    st = _b(sc)
+    fixed = st["B1"].hi + st["B2"].hi + st["B5"].hi + st["B7"].hi + st["B8"].hi
+    limit = bridge_cfg()["scene_ttl_ms"] - SAFETY_MARGIN_MS
+
+    def use_age(infer: float) -> float:
+        d = _components(sc, infer, hits)
+        return fixed + max(d["wait"]) + infer + max(d["confirm"]) + refresh_gap_ms(sc, infer)
+
+    lo, hi = 0.0, 80.0
+    for _ in range(40):
+        mid = (lo + hi) / 2
+        lo, hi = (mid, hi) if use_age(mid) <= limit else (lo, mid)
+    return lo
+
+
 def summary(sc: Scenario) -> dict:
-    """The numbers a scenario is judged by."""
+    """The numbers a scenario is judged by. `ttl_margin_ms` is against the scene's worst age when it ARRIVES (the old figure);
+    `use_margin_ms` is against its worst age at its last USE (arrival + the refresh gap), which is what the bridge's TTL really judges."""
     cfg = bridge_cfg()
     a_lo, a_typ, a_hi = total(sc, "A")
     b_lo, b_typ, b_hi = total(sc, "B")
     a_pipe = [s for s in stages(sc) if s.group == "A" and s.id != "A4"]
     t_lo = AscConfig().t_min_ms
+    gap = refresh_gap_ms(sc)
     return {"scenario": sc.key, "mode": usb_mode(sc.mouse_hz, cfg), "A_pipeline": (sum(s.lo for s in a_pipe), sum(s.typ for s in a_pipe), sum(s.hi for s in a_pipe)),
             "A_total": (a_lo, a_typ, a_hi), "B": (b_lo, b_typ, b_hi), "ttl_ms": cfg["scene_ttl_ms"], "ttl_margin_ms": cfg["scene_ttl_ms"] - b_hi,
-            "guard_ms": t_lo, "guard_margin_ms": t_lo - b_hi}
+            "refresh_gap_ms": gap, "use_age_hi_ms": b_hi + gap, "use_margin_ms": cfg["scene_ttl_ms"] - b_hi - gap,
+            "guard_ms": t_lo, "guard_margin_ms": t_lo - b_hi, "healthy_age_hi_ms": healthy_age_hi_ms(sc), "safe_max_age_ms": safe_max_age_ms(sc)}
+
+
+# the targets for the board (all of them ESTIMATES until there is one): B for the NPU path with the v1 defaults, in ms
+BOARD_TARGETS = (("инференс на NPU", "p50 3", "p95 4", "—", "unmeasured"), ("B целиком (scene → мост знает цель)", "p50 ≤ 14", "p95 ≤ 19", "p99 ≤ 30", "estimate"),
+                 ("возраст сцены при использовании", "—", "—", "p99 ≤ 40", "estimate"), ("запас до T_lo (100 мс)", "—", "—", "> 0 всегда", "calc"))
 
 
 def with_changes(sc: Scenario, **kw) -> Scenario:

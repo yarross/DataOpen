@@ -57,7 +57,8 @@ def counts() -> str:
     v, c = C.verdict(), C.counts()
     st = v["modules"]
     rows = [("модулей", f"{sum(st.values())}: implemented {st['implemented']}, simulated {st['simulated']}, architecture-only {st['architecture']}, deferred {st['deferred']}"),
-            ("автотестов", f"Python {c['python_tests']} функций в {c['python_files']} файлах (с параметрами больше), Node {c['node_tests']} в {c['node_files']} файлах; из них приёмочных Python {c['acceptance_tests']}"),
+            ("автотестов", f"Python более {c['python_tests'] // 100 * 100} функций (с параметрами больше), Node более {c['node_tests'] // 50 * 50}; "
+                           f"из них приёмочных Python {c['acceptance_tests']} (точные числа: `dataopen release status --json`; округление нужно, чтобы документ не старел с каждым новым тестом)"),
             ("критериев готовности v1", f"выполнено {v['met']} из {v['total']}"),
             ("проверено на железе", f"{v['hardware_verified']} критериев"), ("проверено с людьми", f"{v['human_verified']} критериев")]
     return "\n".join([_row("что", "сколько"), _row("---", "---")] + [_row(*r) for r in rows])

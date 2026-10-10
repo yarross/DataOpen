@@ -14,7 +14,7 @@ DOC = Path(__file__).resolve().parents[3] / "docs" / "V1.md"
 def _status(a) -> int:
     v = C.verdict()
     if a.json:
-        print(json.dumps(v, ensure_ascii=False, indent=2))
+        print(json.dumps({**v, "tests": C.counts()}, ensure_ascii=False, indent=2))
     else:
         print(RP.counts())
         print()

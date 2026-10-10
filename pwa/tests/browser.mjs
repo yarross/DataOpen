@@ -3,7 +3,9 @@
 //   DATAOPEN_SIM_URL=http://127.0.0.1:PORT/ node pwa/tests/browser.mjs
 import { createRequire } from 'node:module';
 import assert from 'node:assert/strict';
-import { mkdirSync, readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const require = createRequire(process.env.PLAYWRIGHT_NODE_MODULES ? `${process.env.PLAYWRIGHT_NODE_MODULES}/` : '/opt/node22/lib/node_modules/');
 const { chromium } = require('playwright');
@@ -180,7 +182,7 @@ check('the meter and the calibration switch work', async () => {
   await until(async () => !(await bridge()).calibrating, 3000, 'stopped calibrating');
 });
 
-check('the device card and a copy for this device are saved to the phone, and the copy loads back', async () => {
+check('the device card is saved to the phone, nothing else of the device is, and a file from a sender loads', async () => {
   await tapBtn('Ещё');
   const idText = await page.locator('.control', { hasText: 'Номер владельца (меняется' }).innerText();
   const id = idText.match(/[0-9A-Z]{4}(-[0-9A-Z]{4}){3}/)[0];
@@ -193,14 +195,17 @@ check('the device card and a copy for this device are saved to the phone, and th
   assert.ok(!('storage' in cardJson));
   await shot('12-device-id');
   await tapBtn('Профиль');
-  const dlCopy = page.waitForEvent('download');
-  await tapBtn('Сохранить копию этого слота');
-  const copy = await dlCopy;
-  assert.match(copy.suggestedFilename(), /\.dobundle$/);
-  const bytes = readFileSync(await copy.path());
+  // nothing on the page hands the profile out: no copy, no 'save for another device' (docs/RESIDENCY.md); files only come in
+  assert.equal(await page.getByText(/Сохранить копию|Сохранить для другого устройства/).count(), 0);
+  assert.equal(await page.locator('a[download]').count(), 0);
+  const day = Date.now() % 1000000;
+  const bytes = Buffer.from(await (await fetch(`${base}sim/bundle/profile/${day}`)).arrayBuffer());   // a file from a sender, for this device
   assert.equal(bytes.subarray(0, 4).toString(), 'DOBS');
   assert.ok(!bytes.includes('BIOP'));
-  await page.locator('.control', { hasText: 'Загрузить файл настроек' }).locator('input[type=file]').setInputFiles(await copy.path());
+  const tmp = join(tmpdir(), `dataopen-sender-${day}.dobundle`);
+  writeFileSync(tmp, bytes);
+  await fetch(base + 'sim/button');                                                    // a sender the device has not met: the button on the device
+  await page.locator('.control', { hasText: 'Загрузить файл настроек' }).locator('input[type=file]').setInputFiles(tmp);
   await page.waitForFunction(() => /Настройки загружены/.test(document.querySelector('.message')?.textContent || ''), null, { timeout: 8000 });
 });
 

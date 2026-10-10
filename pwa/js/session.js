@@ -6,7 +6,7 @@
 //   write(chunk: Uint8Array) -> Promise                                              one chunk to the device
 //   close()                                                                           ends the connection
 //   onChunk(u8), onStatus(u8), onClose()                                              set by the session
-import { T, VER, ERR, CHUNK_MIN, CHUNK_MAX, FW_CHUNK_MAX, PKG_CHUNK_MAX } from './constants.js';
+import { T, VER, ERR, CHUNK_MIN, CHUNK_MAX, FW_CHUNK_MAX, PKG_CHUNK_MAX, GET_KINDS } from './constants.js';
 import { packMessage, packJson, unpackMessage, bodyJson, chunkMessage, Reassembler, unpackStatus, unpackInfo, crc32 } from './link.js';
 import { errKeyFor, errParams } from './i18n.js';
 
@@ -160,6 +160,8 @@ export class Session {
 
   // ---------------------------------------------------------------- outgoing
   request(type, obj = {}, { urgent = false, body = null, timeoutMs = this.timeoutMs } = {}) {
+    // the client can only ask for the closed list of things the device says; the profile and the model are not on it (docs/RESIDENCY.md)
+    if (type === T.GET && !GET_KINDS.includes(obj.what)) return Promise.reject(new SessionError(ERR.RESIDENT, 'err.resident'));
     this.reqId = (this.reqId % 0xffff) + 1;
     const req = this.reqId;
     const raw = body ? packMessage(type, req, body) : packJson(type, req, obj);
@@ -259,8 +261,6 @@ export class Session {
   hardBypass() { return this.request(T.HARD_BYPASS, {}, { urgent: true, body: new Uint8Array(0) }); }
   putBundle(bytes) { return this.request(T.BUNDLE_PUT, {}, { body: bytes, timeoutMs: 20000 }); }
   // 'self' (a copy only this device can open) or another device's card (a parsed .docard); the file comes back sealed, the page never reads it.
-  // scope: 'active' (the slot in use) or 'all' (every slot that holds anything, in one file)
-  async getBundle(target = 'self', scope = 'active') { return (await this.request(T.GET, { what: 'bundle', for: target, scope }, { timeoutMs: 20000 })).body; }
   async getIdentity() { return (await this.request(T.GET, { what: 'identity' })).json; }
   selectSlot(k) { return this.request(T.SET, { key: 'slot.active', value: k }); }
   async getSlots() { return (await this.request(T.GET, { what: 'slots' })).json; }

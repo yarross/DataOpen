@@ -118,7 +118,7 @@ class Fatigue:
         return self.valid and self.z_t >= 2.0 and self.z_err >= 2.0
 
 
-@dataclass
+@dataclass(repr=False)
 class ProfileState:
     profile_id: int = 0
     generation: int = 0
@@ -129,6 +129,10 @@ class ProfileState:
     counts: dict[str, int] = field(default_factory=lambda: {c: 0 for c in COUNTS})
     rates: dict[str, float] = field(default_factory=lambda: {r: 0.0 for r in RATES})
     clean: bool = False
+
+    def __repr__(self) -> str:
+        """A profile is the person's hand: it does not print itself into a log, a traceback or an error message (docs/RESIDENCY.md)."""
+        return "ProfileState(<resident>)"
 
     def pack(self) -> bytes:
         b = BioProfileV1()

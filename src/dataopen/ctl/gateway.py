@@ -31,10 +31,11 @@ from ..bridge import protocol as BP
 from . import bundle as B
 from . import panel as PN
 from . import protocol as P
+from . import residency as RS
 from . import seal as SL
 from . import tuning as T
 from .firmware import FirmwareError, SlotManager, Upload
-from .identity import Card, CardError, FileKeyStore, KeyStore, load_identity, provision
+from .identity import FileKeyStore, KeyStore, load_identity, provision
 from .manifest import Manifest, validate_manifest
 from .slots import SLOT_COUNT, SettingsStore, Slot, SlotSet, clean_name, migrate_legacy
 from .vault import Vault, VaultError
@@ -92,7 +93,7 @@ class Gateway:
                  cmd_period_us: int = 1_000_000, status_period_us: int = 250_000, on_forget: Callable[[], None] = lambda: None,
                  chunk_cap: int = P.CHUNK_DEFAULT, vendor_pub: Optional[bytes] = None, hw_id: bytes = b"DOHW0001",
                  factory_image: Optional[bytes] = None, fw_confirm_s: int = 10,
-                 on_reboot: Callable[[str], None] = lambda why: None, require_attested: bool = False) -> None:
+                 on_reboot: Callable[[str], None] = lambda why: None) -> None:
         self.dir = Path(directory)
         self.dir.mkdir(parents=True, exist_ok=True)
         self.spi, self.notify, self.notify_status = spi, notify, notify_status
@@ -101,7 +102,8 @@ class Gateway:
         self.allow_plain_import = allow_plain_import
         self.keystore = keystore or FileKeyStore(self.dir / "keys" / "keys.json")
         self.identity = load_identity(self.keystore)
-        self.vendor_pub, self.hw_id, self.require_attested = vendor_pub, hw_id, require_attested
+        self.vendor_pub, self.hw_id = vendor_pub, hw_id
+        self.egress_blocked = 0          # answers the residency check refused to send (docs/RESIDENCY.md); a healthy device keeps it at 0
         # the factory record, when this device was provisioned (docs/PROVISIONING.md)
         self.device = self._open_device()
         self._attach_device()
@@ -588,7 +590,13 @@ class Gateway:
             self.state_rev = (self.state_rev + 1) & 0xFFFF
             self.last_state = {**self.last_state, **diff}
             if self.session:
-                self._send(P.pack_json(P.T_EVENT, 0, {"rev": self.state_rev, "state": diff}))
+                ev = {"rev": self.state_rev, "state": diff}
+                try:
+                    RS.scrub_event(ev)
+                except RS.ResidencyViolation:
+                    self.egress_blocked += 1
+                else:
+                    self._send(P.pack_json(P.T_EVENT, 0, ev))
         st = self.status(now).pack()
         if force_status or (st != self.last_status and (diff or now >= self.next_status)):
             self.last_status, self.next_status = st, now + self.status_period_us
@@ -698,6 +706,9 @@ class Gateway:
         self.reasm.reset()
 
     def _send(self, raw: bytes) -> None:
+        if len(raw) < P.HDR or raw[1] not in RS.OUTGOING_TYPES:       # the one door out: only the answers on the list leave the device
+            self.egress_blocked += 1
+            return
         chunks, self.out_seq = P.chunk_message(raw, self.chunk, self.out_seq)
         for c in chunks:
             self.notify(c)
@@ -708,6 +719,7 @@ class Gateway:
 
     def _err(self, req: int, code: int, detail: str = "") -> None:
         name = next((k.lower() for k, v in P.ERRORS.items() if v == code), "unknown")
+        detail = str(detail)[:RS.MAX_ERR_DETAIL]
         self.last_error = f"{name}:{detail}"
         self._send(P.pack_json(P.T_ERR, req, {"code": code, "key": f"err.{name}", "detail": detail}))
 
@@ -755,25 +767,7 @@ class Gateway:
         if not self.session:
             raise _Refuse(P.E.NO_SESSION, "say HELLO first")
         if t == P.T_GET:
-            what = m.json().get("what")
-            if what == P.GET_MANIFEST:
-                self._send(P.pack_message(P.T_DATA, m.req, self.manifest.raw))
-            elif what == P.GET_STATE:
-                self._send(P.pack_json(P.T_DATA, m.req, {"rev": self.state_rev, "state": self.state_tree(now)}))
-            elif what == P.GET_IDENTITY:
-                self._send(P.pack_json(P.T_DATA, m.req, self.identity.card().to_json()))
-            elif what == P.GET_BUNDLE:
-                j = m.json()
-                self._send(P.pack_message(P.T_DATA, m.req, self._export_bundle(j.get("for", "self"), now, j.get("scope", "active"))))
-            elif what == P.GET_SLOTS:
-                self._send(P.pack_json(P.T_DATA, m.req,
-                                       {"active": self.active, "count": SLOT_COUNT, "slots": [s.info() for s in self.slotset]}))
-            elif what == P.GET_FIRMWARE:
-                self._send(P.pack_json(P.T_DATA, m.req, self._fw_info()))
-            elif what == P.GET_PACKAGES:
-                self._send(P.pack_json(P.T_DATA, m.req, self.pkg.info()))
-            else:
-                raise _Refuse(P.E.BAD_KEY, "get what?")
+            self._get(m)
         elif t == P.T_SET:
             j = m.json()
             # like STOP: whatever layout a slot brings, the way to the next slot stays
@@ -811,6 +805,41 @@ class Gateway:
             self._package_stream(m, now)
         else:
             raise _Refuse(P.E.UNSUPPORTED, f"type {t:#x}")
+
+    def _get(self, m: P.Message) -> None:
+        """What the phone can ask the device to SAY: a closed list (`P.GET_KINDS`). Asking for the profile or the model, under any name, is
+        refused with RESIDENT: that is not a missing feature, it is the rule."""
+        what = m.json().get("what")
+        if what in RS.ASK_FOR_SECRET:
+            raise _Refuse(P.E.RESIDENT, "resident")
+        if what not in P.GET_KINDS:
+            raise _Refuse(P.E.BAD_KEY, "get what?")
+        now = self.clock()
+        if what == P.GET_MANIFEST:
+            body = self.manifest.raw
+        else:
+            if what == P.GET_STATE:
+                obj = {"rev": self.state_rev, "state": self.state_tree(now)}
+            elif what == P.GET_IDENTITY:
+                obj = self.identity.card().to_json()
+            elif what == P.GET_SLOTS:
+                obj = {"active": self.active, "count": SLOT_COUNT, "slots": [s.info() for s in self.slotset]}
+            elif what == P.GET_FIRMWARE:
+                obj = self._fw_info()
+            else:
+                obj = self.pkg.info()
+            try:
+                RS.scrub(what, obj)
+            except RS.ResidencyViolation:
+                self.egress_blocked += 1
+                raise _Refuse(P.E.RESIDENT, "egress") from None
+            body = P.pack_json(P.T_DATA, m.req, obj)
+            if len(body) > RS.MAX_ANSWER + P.HDR + 4:
+                self.egress_blocked += 1
+                raise _Refuse(P.E.RESIDENT, "egress")
+            self._send(body)
+            return
+        self._send(P.pack_message(P.T_DATA, m.req, body))
 
     def _do_set(self, key: str, value, now: int) -> None:
         s = self.settings
@@ -864,57 +893,8 @@ class Gateway:
             raise _Refuse(P.E.BAD_KEY, key)
 
     # ------------------------------------------------------------------------------------------------------ the sealed file
-    def _export_bundle(self, target, now: int, scope="active") -> bytes:
-        """The active slot's profile, its two levels and its layout ('active'), or every slot that holds anything ('all'), sealed to
-        `target`
-        ('self', or another device's card). Another device's card needs the button here: otherwise a stolen, paired phone could carry the
-        personal profile out under somebody else's key."""
-        if scope not in ("active", "all"):
-            raise _Refuse(P.E.BAD_VALUE, "scope")
-        if target == "self":
-            card = self.identity.card()
-        else:
-            try:
-                card = Card.from_json(target)
-            except CardError as e:
-                raise _Refuse(P.E.BAD_BUNDLE, "card") from e
-        if card.digest != self.identity.digest:
-            # a card nobody vouches for may be a page's invention: no file is made for it
-            if self.require_attested:
-                from ..provisioning.records import RecordError, verify_chain
-                try:
-                    if self.vendor_pub is None:
-                        raise RecordError("binding")
-                    verify_chain(card, self.vendor_pub, self.hw_id)
-                except RecordError:
-                    raise _Refuse(P.E.BAD_BUNDLE, "card_unattested") from None
-            self._need_button(now, f"export:{card.id}")
-        meta = {"name": "DataOpen", "created": time.strftime("%Y-%m-%d", time.gmtime())}
-        if scope == "all" and any(s.used for s in self.slotset):
-            slots = []
-            for sl in self.slotset:
-                if not sl.used:
-                    continue
-                try:
-                    st = sl.profile.load()
-                except ProfileError:
-                    st = None
-                lv = (self.settings.strength, self.settings.tremor) if sl.k == self.active else (sl.strength, sl.tremor)
-                slots.append(SL.SlotData(sl.k, st, lv, sl.manifest, sl.name))
-            return self._seal_or_refuse(card, slots=slots, meta=meta)
-        try:
-            st = self.profile_store.load()
-        except ProfileError:
-            st = None
-        man = self.manifest.m if self.custom_manifest else None
-        return self._seal_or_refuse(card, profile=st, tuning=(self.settings.strength, self.settings.tremor), manifest=man, meta=meta)
-
-    def _seal_or_refuse(self, card: Card, **kw) -> bytes:
-        try:
-            return SL.seal(self.identity, card, self.identity.next_seq(), **kw)
-        except SL.SealError as e:                                # four layouts of their own can be more than one message holds
-            raise _Refuse(P.E.TOO_BIG, e.key) from None
-
+    # There is no export here, on purpose (docs/RESIDENCY.md): the profile and the weights of the model never leave the device, so this
+    # gateway has no function that seals them for anybody, itself included. Files only come IN.
     def _import_bundle(self, raw: bytes, now: int) -> None:
         if raw[:4] == b"DOBN":
             if not self.allow_plain_import:
@@ -938,20 +918,20 @@ class Gateway:
         for sd in o.slots:                                       # every layout is checked before any slot is touched
             if sd.manifest is not None and validate_manifest(sd.manifest):
                 raise _Refuse(P.E.BAD_BUNDLE, "damaged")
-        rec = None
-        if not o.is_self:                                        # a copy of one's own is always welcome; anything else needs to be known
-            fp = o.sender_digest.hex()
-            rec = self.trust["senders"].get(fp)
-            if rec is not None and o.seq <= rec["last_seq"]:
-                raise _Refuse(P.E.REPLAY, "replay")
-            if rec is None:
-                if len(self.trust["senders"]) >= MAX_TRUSTED:
-                    raise _Refuse(P.E.NOT_ALLOWED, "trust list full")
-                self._need_button(now, f"trust:{o.sender_id}")
-                rec = {"id": o.sender_id}
-                self.trust["senders"][fp] = rec
-            rec["last_seq"] = o.seq
-            self._save_trust()
+        if o.is_self:                  # this device makes no files (docs/RESIDENCY.md): one that says it did is a theft of its keys
+            raise _Refuse(P.E.BAD_BUNDLE, "own_file")
+        fp = o.sender_digest.hex()
+        rec = self.trust["senders"].get(fp)                      # everybody else needs to be known, the first time by the button here
+        if rec is not None and o.seq <= rec["last_seq"]:
+            raise _Refuse(P.E.REPLAY, "replay")
+        if rec is None:
+            if len(self.trust["senders"]) >= MAX_TRUSTED:
+                raise _Refuse(P.E.NOT_ALLOWED, "trust list full")
+            self._need_button(now, f"trust:{o.sender_id}")
+            rec = {"id": o.sender_id}
+            self.trust["senders"][fp] = rec
+        rec["last_seq"] = o.seq
+        self._save_trust()
         if o.slots:                                              # a file about named slots: each goes to the slot with its number
             for sd in o.slots:
                 self._install_slot(sd, now)

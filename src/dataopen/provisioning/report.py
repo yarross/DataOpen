@@ -62,7 +62,7 @@ def scenarios_table() -> str:
         o = RC.run(s)
         first = f"{o.first.stage}: мышь «{o.first.mouse}», экран «{o.first.video}», светодиод {o.first.led}"
         how = "; ".join(t for _, t in s.procedure)
-        prof = "сохраняются" if o.profiles_kept else ("вернутся из резервной копии .dobundle" if o.backup_restores else "теряются (возврат производителю)")
+        prof = "сохраняются" if o.profiles_kept else ("теряются (возврат производителю)" if o.rma else "теряются: калибровка заново, копий профиля нет")
         out.append(_row(s.event, first, how, "нужен" if o.computer else "не нужен", prof))
     return "\n".join(out)
 
@@ -74,7 +74,7 @@ def tools_table() -> str:
             ("поддержка", "`dataopen recover simulate`", "разбор сценария: что видит человек, что делать, нужен ли компьютер"),
             ("поддержка", "`dataopen recover full-return`", "L4: токен + присутствие, банки из золотого образа, личное стёрто"),
             ("человек", "кнопки SLOT + CONFIRM при подаче питания", "система восстановления без компьютера"),
-            ("человек", "приложение (PWA)", "L1/L2/L3 (два шага + кнопка), серийный номер, резервные копии")]
+            ("человек", "приложение (PWA)", "L1/L2/L3 (два шага + кнопка), серийный номер")]
     return "\n".join([_row("кто", "инструмент", "что делает"), _row("---", "---", "---")] + [_row(*r) for r in rows])
 
 

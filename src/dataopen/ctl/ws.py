@@ -172,6 +172,14 @@ class SimServer:
             head = f"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {len(data)}\r\nConnection: close\r\n\r\n"
             w.write(head.encode() + data)
             return
+        elif target.startswith("/sim/bundle/"):
+            # /sim/bundle/<kind>/<seq>: a small settings file for THIS device from a test sender (kinds: profile, slots, other)
+            from ..updates.dev import sim_bundle
+            parts = target.split("/")
+            data = sim_bundle(parts[3], wd.gw.identity.card(), Path(wd.dir) / "sim-senders", int(parts[4]))
+            head = f"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {len(data)}\r\nConnection: close\r\n\r\n"
+            w.write(head.encode() + data)
+            return
         elif target.startswith("/sim/image/"):
             # /sim/image/<version>[/<min_version>]: an update image signed by the simulation's TEST manufacturer
             from .sim import dev_image

@@ -54,12 +54,20 @@ NO_SESSION_OK = (T_STOP, T_HARD_BYPASS, T_PING, T_HELLO)
 
 # error codes carried by T_ERR; every code has an i18n key `err.<name>` in the client
 ERRORS = dict(BAD_MSG=1, BAD_KEY=2, BAD_VALUE=3, BUSY=4, NOT_ALLOWED=5, BAD_BUNDLE=6, NO_PROFILE=7, TOO_BIG=8, NO_SESSION=9, UNSUPPORTED=10,
-              PHYSICAL=11, BAD_VERSION=12, WRONG_DEVICE=13, BAD_SIGNATURE=14, REPLAY=15, PLAIN_REFUSED=16, FW_REJECTED=17, PKG_REJECTED=18)
+              PHYSICAL=11, BAD_VERSION=12, WRONG_DEVICE=13, BAD_SIGNATURE=14, REPLAY=15, PLAIN_REFUSED=16, FW_REJECTED=17, PKG_REJECTED=18,
+              RESIDENT=19)
 E = type("E", (), ERRORS)
 
 # the `get` targets
-GET_MANIFEST, GET_STATE, GET_BUNDLE, GET_IDENTITY, GET_SLOTS, GET_FIRMWARE = "manifest", "state", "bundle", "identity", "slots", "firmware"
+GET_MANIFEST, GET_STATE, GET_IDENTITY, GET_SLOTS, GET_FIRMWARE = "manifest", "state", "identity", "slots", "firmware"
 GET_PACKAGES = "packages"
+# The closed list of things the phone can ask the device to SAY (docs/RESIDENCY.md). There is no 'bundle', no 'profile', no 'model': the
+# profile of the hand and the weights of the model never leave the device, so there is nothing of that kind to ask for.
+GET_KINDS = (GET_MANIFEST, GET_STATE, GET_IDENTITY, GET_SLOTS, GET_FIRMWARE, GET_PACKAGES)
+# what a file control of the manifest can do: carry a file TO the device, or save the device's public card. Nothing else leaves the device.
+FILE_OPS_IN = ("bundle_put", "fw_put", "pkg_put")
+FILE_OPS_OUT = ("card_get",)
+FILE_OPS = FILE_OPS_IN + FILE_OPS_OUT
 # hardware slots (docs/SLOTS.md); the status carries the active one and a bit per slot that holds a profile
 SLOT_COUNT = 4
 # data bytes per FW_CHUNK message (the message body limit is 16 KB; BLE cuts it into small writes anyway)
@@ -272,6 +280,8 @@ def constants_js() -> str:
         f"export const T = {obj(TYPES)};",
         f"export const NO_SESSION_OK = {json.dumps(list(NO_SESSION_OK))};",
         f"export const ERR = {obj(ERRORS)};",
+        f"export const GET_KINDS = {json.dumps(list(GET_KINDS))};",
+        f"export const FILE_OPS = {json.dumps(list(FILE_OPS))};",
         f"export const SF = {obj(STATUS_FLAGS)};",
         f"export const RB = {obj(dict(ASC=RB_ASC, TREMOR=RB_TREMOR, TREMOR_NOT_NEEDED=RB_TREMOR_NOT_NEEDED))};",
         f"export const MODES = {json.dumps(MODES)};",

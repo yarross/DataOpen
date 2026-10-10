@@ -1,5 +1,6 @@
 // Manifest + state + language -> a plain tree the DOM layer draws. Pure, so it is tested without a browser. The client knows nine control
 // kinds and no screen by name: anything else becomes a neutral 'not supported' note, never an error.
+import { FILE_OPS } from './constants.js';
 import { pick, t } from './i18n.js';
 
 export const KINDS = ['status', 'toggle', 'stepper', 'action', 'meter', 'note', 'file', 'group', 'text'];
@@ -38,8 +39,8 @@ function node(c, state, lang) {
     case 'note':
       return { ...base, kind: 'note' };
     case 'file':
-      return { ...base, kind: 'file', op: c.op, accept: typeof c.accept === 'string' ? c.accept : '', maxBytes: Number.isInteger(c.max_bytes) ? c.max_bytes : 0,
-        scope: c.scope === 'all' ? 'all' : 'active' };
+      if (!FILE_OPS.includes(c.op)) return { ...base, kind: 'unknown', note: t(lang, 'manifest.unknown') };   // an operation this page does not know is not drawn
+      return { ...base, kind: 'file', op: c.op, accept: typeof c.accept === 'string' ? c.accept : '', maxBytes: Number.isInteger(c.max_bytes) ? c.max_bytes : 0 };
     case 'text': {
       const maxLen = Number.isInteger(c.maxlen) && c.maxlen > 0 ? Math.min(c.maxlen, 40) : 24;
       return { ...base, kind: 'text', value: typeof v === 'string' ? v : '', known: typeof v === 'string', maxLen };

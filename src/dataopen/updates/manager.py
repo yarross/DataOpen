@@ -22,6 +22,7 @@ from typing import Callable, Optional
 
 from ..ctl import protocol as P
 from ..ctl.manifest import validate_manifest
+from ..ctl.residency import public_card
 from ..ctl.seal import SlotData
 from ..ctl.vault import VaultError
 from . import models as MD
@@ -83,6 +84,8 @@ class ModelStore:
         return j if isinstance(j, dict) else None
 
     def weights(self) -> Optional[bytes]:
+        """The weights, for the one process that RUNS the model (the UI detector, in this device). Nothing that builds a message for the
+        phone may call this: the weights never leave the device (docs/RESIDENCY.md; a test pins the list of callers)."""
         return self._read("model.bin")
 
     def put(self, raw: bytes, meta: dict) -> None:
@@ -330,5 +333,5 @@ class PackageManager:
         r = self.reader
         return {"supported": True, "schema": PKG_SCHEMA, "max_size": MAX_PACKAGE, "pending": self.summary(),
                 "upload": None if r is None else {"next": r.next, "size": r.size},
-                "models": [{"n": s.k, "model": (ModelStore(s).info() or {}).get("card"), "state": ModelStore(s).state(self._fw_version()),
+                "models": [{"n": s.k, "model": public_card((ModelStore(s).info() or {}).get("card")), "state": ModelStore(s).state(self._fw_version()),
                             "previous": ModelStore(s).info(prev=True) is not None} for s in self.gw.slotset]}

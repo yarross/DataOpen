@@ -107,7 +107,7 @@ def boot(u: Unit) -> Boot:
         notes.append(f"bank {u.active} is bad: bank {bank} boots (the probation of an update ends after {MAX_BOOTS} boots)")
     kept = _kept(u)
     if not kept:
-        notes.append("the data partition or the secure element does not give the profiles back: an empty device, a backup file can restore")
+        notes.append("the data partition or the secure element does not give the profiles back: an empty device: the profile never leaves a device, so there is no copy to bring back; the person calibrates again")
     return Boot("normal", bank, mcu, "assisted" if mcu_up else "direct", "tap", "full", "READY" if mcu_up else "BYPASS", kept, notes)
 
 
@@ -178,7 +178,6 @@ class Scenario:
     event: str
     damage: Callable[[Unit], None]
     procedure: tuple                       # (action key, human text)
-    backup_needed: bool = False            # profiles only come back from a .dobundle copy
 
 
 def _dmg(**kw):
@@ -207,7 +206,7 @@ SCENARIOS = (
     Scenario("som_golden_dead", "повреждены золотой образ и оба банка", _dmg(golden_ok=False, bank_ok={"A": False, "B": False}),
              (("maskrom", "компьютер на порт питания + скрепка в RECOVERY: утилита поддержки"),)),
     Scenario("data_dead", "раздел данных (профили) не читается", _dmg(data_ok=False, profiles=False),
-             (("backup", "устройство загружается пустым; профили возвращаются из резервной копии .dobundle через приложение"),), True),
+             (("fresh", "устройство загружается пустым; профиль наружу не выгружается, копии нет: калибровка заново"),)),
     Scenario("mcu_bad_image", "образ MCU моста A плохой", _dmg(mcu_ok={"A": False, "B": True}),
              (("auto", "само: загрузчик MCU берёт банк B; SoM позже пишет A заново"),)),
     Scenario("mcu_dead", "оба банка MCU моста повреждены", _dmg(mcu_ok={"A": False, "B": False}),
@@ -219,7 +218,7 @@ SCENARIOS = (
     Scenario("lost_phone", "потерян телефон или сопряжение", _dmg(),
              (("pair", "удержать CONFIRM 3-10 с: окно сопряжения 120 с; при необходимости заводской сброс (L3)"),)),
     Scenario("se_dead", "secure element не отвечает (аппаратный отказ)", _dmg(se_ok=False),
-             (("rma", "возврат производителю: ключи и профили недоступны, мышь и экран работают напрямую"),), True),
+             (("rma", "возврат производителю: ключи и профили недоступны, мышь и экран работают напрямую"),)),
     Scenario("supply_dead", "блок питания не работает или не подключён", _dmg(supply_ok=False),
              (("supply", "заменить блок питания (5 В / 3 А); прошивка ни при чём, мышь и экран работают напрямую"),)),
 )
@@ -231,8 +230,7 @@ class Outcome:
     first: Boot
     final: Boot
     computer: bool                         # does any step need a computer on the service port?
-    profiles_kept: bool                    # do the profiles survive WITHOUT a backup file?
-    backup_restores: bool                  # does a backup copy (.dobundle) bring them back on this device?
+    profiles_kept: bool                    # do the profiles survive the repair? (there is no copy to bring them back from: docs/RESIDENCY.md)
     rma: bool                              # is the unit lost to the field (return to the manufacturer)?
     steps: list
 
@@ -256,9 +254,9 @@ def run(s: Scenario) -> Outcome:
             download_golden(u, 3)
             computer = True
             steps.append("a newer golden image downloaded")
-        elif key == "backup":
-            u.data_ok, u.profiles = True, False             # a clean partition; the backup file is applied from the app
-            steps.append("backup file applied from the app")
+        elif key == "fresh":
+            u.data_ok, u.profiles = True, False             # a clean partition: an empty device, the person calibrates again
+            steps.append("the device starts empty; the person calibrates again")
         elif key in ("pair", "supply"):
             if key == "supply":
                 u.supply_ok = True
@@ -266,8 +264,7 @@ def run(s: Scenario) -> Outcome:
             steps.append("return to the manufacturer")
     final = boot(u)
     rma = any(k == "rma" for k, _ in s.procedure)
-    backup_restores = (not first.profiles_kept) and u.se_ok and not rma          # a copy sealed to this device opens only with this device's own keys
-    return Outcome(s, first, final, computer, bool(first.profiles_kept), backup_restores, rma, steps)
+    return Outcome(s, first, final, computer, bool(first.profiles_kept), rma, steps)
 
 
 def always_direct(u: Unit) -> bool:

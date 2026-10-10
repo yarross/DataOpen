@@ -64,23 +64,11 @@ export async function start(root = document.getElementById('app'), env = {}) {
       render();
     },
     file: (node, file) => guarded(async () => {
-      const day = new Date().toISOString().slice(0, 10);
-      if (node.op === 'bundle_get') {                                    // a copy sealed to THIS device; the page only carries the bytes
-        const all = node.scope === 'all';
-        download(await session.getBundle('self', node.scope), `dataopen-${all ? 'all-slots' : 'copy'}-${day}.dobundle`);
-        say('info', t(prefs.lang, all ? 'file.copy_all_saved' : 'file.copy_saved'));
-      } else if (node.op === 'card_get') {
+      // files only go IN; the one thing the page saves is the device's public card (docs/RESIDENCY.md): there is no way to ask for the profile
+      if (node.op === 'card_get') {
         const card = await session.getIdentity();
         download(new TextEncoder().encode(JSON.stringify(card)), `dataopen-${card.id}.docard`, 'application/json');
         say('info', t(prefs.lang, 'file.card_saved'));
-      } else if (node.op === 'bundle_for_card') {
-        if (!file) return;
-        if (file.size > (node.maxBytes || 4096)) { say('error', t(prefs.lang, 'file.too_big')); return; }
-        let card;
-        try { card = JSON.parse(await file.text()); } catch { card = null; }
-        if (!card || typeof card !== 'object' || typeof card.id !== 'string') { say('error', t(prefs.lang, 'file.bad_card')); return; }
-        download(await session.getBundle(card, node.scope), `dataopen-for-${card.id}-${day}.dobundle`);
-        say('info', t(prefs.lang, 'file.for_saved', { id: card.id }));
       } else if (node.op === 'fw_put') {                                 // an update image: opaque bytes, checked in full by the device
         if (!file) return;
         if (node.maxBytes && file.size > node.maxBytes) { say('error', t(prefs.lang, 'file.too_big')); return; }

@@ -44,6 +44,16 @@ def pending(w):
     return w.phone.get_packages()["pending"]
 
 
+def give(w, tmp_path, **kw):
+    """A package goes in and is applied, from a sender who is known (the first time the button makes them known; weights always need it).
+    The device makes no packages of its own (docs/RESIDENCY.md), so there is no 'a copy for oneself'."""
+    giver = H.sender(tmp_path, "giver")
+    seq = w.gw.trust["senders"].get(giver.digest.hex(), {}).get("last_seq", 0) + 1
+    r = w.phone.pkg_send(K.build_package(giver, w.gw.identity.card(), seq, **kw))
+    assert r.type == P.T_ACK, r.body
+    return ok(apply_(w, button=True))
+
+
 def apply_(w, button=False):
     if button:
         w.gw.physical_press(w.t)
@@ -111,15 +121,15 @@ def test_a_known_sender_needs_no_button_for_a_profile_but_does_for_a_model(tmp_p
     assert w.phone.get_state()["model.state"] == "ok" and w.phone.state["model.name"] == "icons"
 
 
-def test_your_own_copy_needs_no_button_even_with_a_model_and_the_old_model_is_kept(tmp_path, tremor_dir):
+def test_a_model_needs_the_button_every_time_and_the_old_model_is_kept(tmp_path, tremor_dir):
     w = world(tmp_path, tremor_dir)
-    me = w.gw.identity
-    w.phone.pkg_send(K.build_package(me, me.card(), me.next_seq(), slot=0, model=(MODEL, CARD)))
-    assert pending(w)["self"] and pending(w)["button"] == ""
-    ok(apply_(w))
+    give(w, tmp_path, slot=0, model=(MODEL, CARD))
     assert w.phone.get_state()["model.state"] == "ok" and w.phone.state["model.version"] == 1
-    w.phone.pkg_send(K.build_package(me, me.card(), me.next_seq(), slot=0, model=(MODEL2, CARD2)))
-    ok(apply_(w))
+    giver = H.sender(tmp_path, "giver")
+    w.phone.pkg_send(K.build_package(giver, w.gw.identity.card(), 2, slot=0, model=(MODEL2, CARD2)))
+    assert pending(w)["button"] == "model" and not pending(w)["self"]
+    assert apply_(w).json()["code"] == P.E.PHYSICAL                                    # a known sender, but weights always need the press
+    ok(apply_(w, button=True))
     assert w.phone.get_state()["model.version"] == 2
     info = w.phone.get_packages()["models"][0]
     assert info["model"]["version"] == 2 and info["previous"] and info["state"] == "ok"
@@ -127,6 +137,16 @@ def test_your_own_copy_needs_no_button_even_with_a_model_and_the_old_model_is_ke
     assert w.phone.get_state()["model.version"] == 1
     ok(w.phone.act("pkg.revert", True))
     assert w.phone.get_state()["model.version"] == 2
+
+
+def test_a_package_the_device_itself_seems_to_have_made_is_refused_with_the_first_pieces(tmp_path, tremor_dir):
+    """The device makes no files; one sealed with its own keys can only come from stolen keys or a build that no longer exists."""
+    w = world(tmp_path, tremor_dir)
+    me = w.gw.identity
+    raw = K.build_package(me, me.card(), me.next_seq(), slot=0, tuning=(8, 8))
+    assert detail(w.phone.pkg_send(raw)) == "own_file" and leftovers(w) == []
+    w.gw.physical_press(w.t)
+    assert detail(w.phone.pkg_send(raw)) == "own_file" and w.gw.slotset[0].strength == 5
 
 
 def test_nothing_to_revert_is_said_plainly(tmp_path, tremor_dir):
@@ -138,9 +158,7 @@ def test_nothing_to_revert_is_said_plainly(tmp_path, tremor_dir):
 
 def test_the_weights_are_encrypted_at_rest_under_the_slots_key_and_die_with_the_slot(tmp_path, tremor_dir):
     w = world(tmp_path, tremor_dir)
-    me = w.gw.identity
-    w.phone.pkg_send(K.build_package(me, me.card(), me.next_seq(), slot=0, model=(MODEL, CARD)))
-    ok(apply_(w))
+    give(w, tmp_path, slot=0, model=(MODEL, CARD))
     d = w.gw.slotset[0].dir
     assert (d / "model.bin").exists() and MODEL[:30] not in (d / "model.bin").read_bytes()
     assert b"icons" not in (d / "model.json").read_bytes()
@@ -155,8 +173,7 @@ def test_erasing_personal_data_takes_a_waiting_package_and_every_model_with_it(t
     for key in ("erase.profile", "factory.reset"):
         w = world(tmp_path / key, tremor_dir)
         me, alice = w.gw.identity, H.sender(tmp_path / key)
-        w.phone.pkg_send(K.build_package(me, me.card(), me.next_seq(), slot=0, model=(MODEL, CARD)))
-        ok(apply_(w))
+        give(w, tmp_path / key, slot=0, model=(MODEL, CARD))
         w.phone.pkg_send(K.build_package(alice, me.card(), 1, slot=1, tuning=(2, 2)))
         assert pending(w) is not None and (pkg_dir(w) / "pending.dopk").exists()
         w.gw.physical_press(w.t)
@@ -321,10 +338,8 @@ def test_a_package_and_a_firmware_image_cannot_stand_in_for_each_other_on_the_wi
 def test_a_waiting_package_does_not_touch_the_banks_and_an_update_does_not_touch_the_slots(tmp_path, tremor_dir):
     from test_ctl_update import PUB, apply_ as fw_apply, img, reboot_into, stage
     w = world(tmp_path, tremor_dir, vendor_pub=PUB, factory_image=img(1, 1), fw_confirm_s=3)
-    me = w.gw.identity
     fw_before = {p.name: p.read_bytes() for p in (w.gw.dir / "fw").glob("*")}
-    w.phone.pkg_send(K.build_package(me, me.card(), me.next_seq(), slot=0, tuning=(8, 2), model=(MODEL, CARD)))
-    ok(apply_(w))
+    give(w, tmp_path, slot=0, tuning=(8, 2), model=(MODEL, CARD))
     assert {p.name: p.read_bytes() for p in (w.gw.dir / "fw").glob("*")} == fw_before          # a package never writes the banks
     slot_before = {p.relative_to(w.gw.dir): p.read_bytes() for p in (w.gw.dir / "slots").rglob("*") if p.is_file()}
     stage(w, 2)
@@ -358,9 +373,7 @@ def test_while_the_new_system_is_on_trial_packages_wait(tmp_path, tremor_dir):
 def test_a_model_that_needs_a_newer_system_is_kept_but_marked(tmp_path, tremor_dir):
     from test_ctl_update import PUB, img
     w = world(tmp_path, tremor_dir, vendor_pub=PUB, factory_image=img(1, 1), fw_confirm_s=3)
-    me = w.gw.identity
-    w.phone.pkg_send(K.build_package(me, me.card(), me.next_seq(), slot=0, model=(MODEL, CARD), min_fw=1))
-    ok(apply_(w))
+    give(w, tmp_path, slot=0, model=(MODEL, CARD), min_fw=1)
     assert w.phone.get_state()["model.state"] == "ok"
     # the system goes back to something older than the package asked for: the file stays, the state says so, nothing is deleted
     mf = w.gw.slotset[0].dir / "model.json"

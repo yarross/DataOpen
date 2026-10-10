@@ -16,8 +16,7 @@ from . import protocol as P
 SCHEMA = 1
 TYPES = ("status", "toggle", "stepper", "action", "meter", "note", "file", "group", "text")
 CONFIRMS = ("none", "revert", "two-step")
-FILE_OPS = ("bundle_put", "bundle_get", "bundle_for_card", "card_get", "fw_put", "pkg_put")
-SCOPES = ("active", "all")           # which slots a file control saves: the active one, or every one that holds anything
+FILE_OPS = P.FILE_OPS             # files go IN, plus the public card: nothing else leaves the device (docs/RESIDENCY.md)
 MAX_TEXT = 40
 FW_MAX_BYTES = 64 * 1024 * 1024
 PKG_MAX_BYTES = 21 * 1024 * 1024   # a package: up to 20 MiB of content plus the sealing
@@ -69,19 +68,8 @@ def default_manifest(rev: int = 1) -> dict:
                            "While calibrating, assistance is off: the device learns your usual movements. Use the mouse as always.")},
                 {"id": "import", "type": "file", "op": "bundle_put", "accept": ".dobundle", "max_bytes": 16000,
                  "label": L("Загрузить файл настроек", "Load a settings file"),
-                 "help": L("Откроется только файл, сделанный для этого устройства.", "Only a file made for this device will open.")},
-                {"id": "export", "type": "file", "op": "bundle_get", "accept": ".dobundle", "max_bytes": 16000,
-                 "label": L("Сохранить копию этого слота", "Save a copy of this slot"),
-                 "help": L("Файл зашифрован и откроется только на этом устройстве.",
-                           "The file is encrypted and opens only on this device.")},
-                {"id": "export_all", "type": "file", "op": "bundle_get", "scope": "all", "accept": ".dobundle", "max_bytes": 16000,
-                 "label": L("Сохранить копию всех слотов", "Save a copy of all slots"),
-                 "help": L("Все слоты в одном файле. Откроется только на этом устройстве.",
-                           "All the slots in one file. It opens only on this device.")},
-                {"id": "export_other", "type": "file", "op": "bundle_for_card", "accept": ".docard", "max_bytes": 4096,
-                 "label": L("Сохранить для другого устройства", "Save for another device"),
-                 "help": L("Выберите карточку получателя и сверьте номер с наклейкой. Нужна кнопка на этом устройстве.",
-                           "Choose the other device's card and check its number against its label. Needs the button on this device.")},
+                 "help": L("Откроется только файл, сделанный для этого устройства. Из устройства профиль не выгружается никуда.",
+                           "Only a file made for this device will open. The profile is never taken out of the device.")},
                 {"id": "restore", "type": "action", "key": "profile.restore", "confirm": "two-step",
                  "label": L("Вернуть прежний профиль", "Restore the previous profile")},
                 {"id": "slot_name", "type": "text", "key": "slot.name", "maxlen": 24,
@@ -260,8 +248,8 @@ def validate_manifest(m: Any) -> list[str]:
             cap = FW_MAX_BYTES if c.get("op") == "fw_put" else PKG_MAX_BYTES if c.get("op") == "pkg_put" else 65536
             if not isinstance(c.get("max_bytes"), int) or isinstance(c.get("max_bytes"), bool) or not 0 < c["max_bytes"] <= cap:
                 errs.append(f"{w}: max_bytes must be 1..{cap}")
-            if c.get("scope", "active") not in SCOPES:
-                errs.append(f"{w}: scope must be one of {SCOPES}")
+            if "scope" in c:
+                errs.append(f"{w}: a file control has no scope (files only come in)")
         elif typ == "text":
             if not isinstance(c.get("maxlen"), int) or isinstance(c.get("maxlen"), bool) or not 1 <= c["maxlen"] <= MAX_TEXT:
                 errs.append(f"{w}: maxlen must be 1..{MAX_TEXT}")

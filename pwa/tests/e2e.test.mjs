@@ -138,15 +138,21 @@ test('the device refuses what its manifest does not allow, with keyed errors', {
   s.close();
 });
 
-test('a copy sealed to this device goes out and comes back; damaged and old-format files are refused with plain reasons', { skip }, async () => {
+const sealed = async (kind, seq) => new Uint8Array(await (await fetch(`${base}sim/bundle/${kind}/${seq}`)).arrayBuffer());
+
+test('a file from a sender comes in; there is no way to take a copy out; damaged and old-format files are refused with plain reasons', { skip }, async () => {
   const s = await open();
   await neutral(s);
-  const raw = await s.getBundle('self');
+  // files only go IN: the client has no call for the profile, and a request for it does not even leave the page
+  assert.equal(typeof s.getBundle, 'undefined');
+  await assert.rejects(s.request(T.GET, { what: 'bundle', for: 'self' }), (e) => e.code === ERR.RESIDENT && e.key === 'err.resident');
+  const raw = await sealed('profile', 1);
   assert.equal(String.fromCharCode(...raw.slice(0, 4)), 'DOBS');
   assert.ok(raw.length > 300 && raw.length < 2000);
   assert.ok(!String.fromCharCode(...raw).includes('BIOP'));              // nothing readable in it
+  await fetch(base + 'sim/button');                                      // a sender the device has not met yet: the button on the device
   assert.equal((await s.putBundle(raw)).json.ok, true);
-  const bad = raw.slice();
+  const bad = (await sealed('profile', 2)).slice();
   bad[200] ^= 1;
   await assert.rejects(s.putBundle(bad), (e) => e.key === 'err.bad_signature');
   await assert.rejects(s.putBundle(new Uint8Array(16200)), (e) => e.code === ERR.TOO_BIG);
@@ -173,13 +179,15 @@ test('the dangerous actions ask for the button on the device and say what for', 
   await assert.rejects(s.act('erase.profile', true), (e) => e.code === ERR.PHYSICAL && e.key === 'err.physical.erase');
   await assert.rejects(s.act('factory.reset', true), (e) => e.code === ERR.PHYSICAL);
   await assert.rejects(s.act('erase.profile', false), (e) => e.code === ERR.NOT_ALLOWED);      // two-step: needs 'confirmed'
-  const copy = await s.getBundle('self');
+  const copy = await sealed('profile', 3);
   await fetch(base + 'sim/button');
   assert.equal((await s.act('erase.profile', true)).json.ok, true);
   assert.equal(s.state['profile.fill'], 0);
   assert.equal(s.state['assist.on'], false);
   assert.equal((await bridge()).reason, 'CMD_PASSTHRU');
-  await s.putBundle(copy);                                              // a copy of one's own comes back without any button
+  await assert.rejects(s.putBundle(copy), (e) => e.key === 'err.physical.trust');   // the senders were forgotten with the data: the button again
+  await fetch(base + 'sim/button');
+  await s.putBundle(copy);
   assert.ok(s.state['profile.fill'] > 0);
   s.close();
 });

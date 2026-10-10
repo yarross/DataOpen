@@ -164,54 +164,8 @@
             "en": "Load a settings file"
           },
           "help": {
-            "ru": "Откроется только файл, сделанный для этого устройства.",
-            "en": "Only a file made for this device will open."
-          }
-        },
-        {
-          "id": "export",
-          "type": "file",
-          "op": "bundle_get",
-          "accept": ".dobundle",
-          "max_bytes": 16000,
-          "label": {
-            "ru": "Сохранить копию этого слота",
-            "en": "Save a copy of this slot"
-          },
-          "help": {
-            "ru": "Файл зашифрован и откроется только на этом устройстве.",
-            "en": "The file is encrypted and opens only on this device."
-          }
-        },
-        {
-          "id": "export_all",
-          "type": "file",
-          "op": "bundle_get",
-          "scope": "all",
-          "accept": ".dobundle",
-          "max_bytes": 16000,
-          "label": {
-            "ru": "Сохранить копию всех слотов",
-            "en": "Save a copy of all slots"
-          },
-          "help": {
-            "ru": "Все слоты в одном файле. Откроется только на этом устройстве.",
-            "en": "All the slots in one file. It opens only on this device."
-          }
-        },
-        {
-          "id": "export_other",
-          "type": "file",
-          "op": "bundle_for_card",
-          "accept": ".docard",
-          "max_bytes": 4096,
-          "label": {
-            "ru": "Сохранить для другого устройства",
-            "en": "Save for another device"
-          },
-          "help": {
-            "ru": "Выберите карточку получателя и сверьте номер с наклейкой. Нужна кнопка на этом устройстве.",
-            "en": "Choose the other device's card and check its number against its label. Needs the button on this device."
+            "ru": "Откроется только файл, сделанный для этого устройства. Из устройства профиль не выгружается никуда.",
+            "en": "Only a file made for this device will open. The profile is never taken out of the device."
           }
         },
         {

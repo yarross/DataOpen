@@ -49,7 +49,7 @@ ORDER = ("profile", "tuning", "ui_manifest", "meta", "model")
 assert HEAD == 208
 # the header, field by field (the document's table is generated from this; a test keeps it equal to HEAD_FMT)
 FIELDS = (
-    ("magic", 4, "'DOPK'"), ("ver", 1, "формат, 1"), ("suite", 1, "набор примитивов, 1"), ("flags", 2, "бит 0: «для себя» (отправитель = получатель)"),
+    ("magic", 4, "'DOPK'"), ("ver", 1, "формат, 1"), ("suite", 1, "набор примитивов, 1"), ("flags", 2, "бит 0: «для себя» (отправитель = получатель); формат его знает, устройство такой файл отвергает"),
     ("pkg_id", 16, "случайный номер пакета (входит в ключ)"), ("recipient_fp", 8, "короткий отпечаток получателя: Device Public ID"),
     ("sender_fp", 8, "короткий отпечаток отправителя"), ("seq", 8, "порядковый номер отправителя, только растёт"),
     ("schema", 2, "схема пакета, которую нужно понимать"), ("kinds", 2, "что внутри (битовая маска: профиль, уровни, раскладка, имя, модель)"),
@@ -258,9 +258,11 @@ class PackageReader:
         if kinds == 0 or kinds & ~ALL_KINDS:
             raise UpdateError("B", "unsupported", f"kinds {kinds:#x}")
         check_compat(schema, min_fw, self.supported_schema, self.fw_version)
-        self.is_self = bool(flags & F_SELF) and sdig == self.me.digest
-        if bool(flags & F_SELF) != (sdig == self.me.digest):
+        if sdig == self.me.digest:                       # this device makes no files (docs/RESIDENCY.md): one that says it did is a theft of its keys
+            raise UpdateError("B", "own_file", "made by this very device")
+        if bool(flags & F_SELF):
             raise UpdateError("B", "damaged", "the self flag does not match the sender")
+        self.is_self = False
         self.sender_digest = sdig
         last = self.last_seq(sdig)
         self.known_sender = self.is_self or last is not None

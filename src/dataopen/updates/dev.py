@@ -24,9 +24,10 @@ def sender(directory: str | Path, name: str = "sender"):
 
 
 def tiny_model(op: str = "Identity", domain: str = "", layout: Optional[dict] = LAYOUT_OK, external: bool = False, opset: int = 13,
-               extra_domain: Optional[str] = None, pad: int = 0) -> bytes:
+               extra_domain: Optional[str] = None, pad: int = 0, seed: Optional[int] = None) -> bytes:
     """A few-hundred-byte ONNX graph: one operator, the UI layout in its metadata. Valid for the structural check, useless for detection.
-    `pad`: that many float weights are added (the graph ignores them) to make the file bigger."""
+    `pad`: that many float weights are added (the graph ignores them) to make the file bigger; with `seed` they are random, so that no two
+    models share a run of bytes (the residency tests look for such runs in everything the device says)."""
     import onnx  # noqa: F401
     from onnx import TensorProto, helper
 
@@ -43,7 +44,8 @@ def tiny_model(op: str = "Identity", domain: str = "", layout: Optional[dict] = 
     if pad:
         import numpy as np
         from onnx import numpy_helper
-        inits.append(numpy_helper.from_array((np.arange(pad) % 251).astype(np.float32), "padding"))
+        w = (np.arange(pad) % 251).astype(np.float32) if seed is None else np.random.RandomState(seed).standard_normal(pad).astype(np.float32)
+        inits.append(numpy_helper.from_array(w, "padding"))
     g = helper.make_graph([node], "g", [x], [y], initializer=inits)
     imports = [helper.make_opsetid(domain, opset)] if domain else [helper.make_opsetid("", opset)]
     if extra_domain:
@@ -80,3 +82,29 @@ def sim_package(kind: str, recipient_card, directory: str | Path, seq: int, slot
     elif kind not in ("big", "other"):
         raise ValueError(kind)
     return raw
+
+
+_SIM_PROFILES: dict = {}
+
+
+def _sim_profile(seed: int):
+    if seed not in _SIM_PROFILES:
+        from ..assist.sim_user import PERSONAS, build_profile
+        _SIM_PROFILES[seed] = build_profile(PERSONAS["tremor"], minutes=6.0, seed=seed)._state
+    return _SIM_PROFILES[seed]
+
+
+def sim_bundle(kind: str, recipient_card, directory: str | Path, seq: int) -> bytes:
+    """What the browser tests fetch from the dev server (`/sim/bundle/...`): a small settings file (DOBS) from a test sender, for THIS
+    device. The device makes no files of its own (docs/RESIDENCY.md), so this is the only way a test gets one. Kinds: 'profile', 'slots'
+    (slots 0 and 2, with names), 'other' (made for a different device)."""
+    from ..ctl import seal as SL
+    me = sender(directory, "clinic")                 # not the sender of the packages: the two are different people to the device
+    st = _sim_profile(3)
+    if kind == "profile":
+        return SL.seal(me, recipient_card, seq, profile=st, tuning=(8, 3))
+    if kind == "slots":
+        return SL.seal(me, recipient_card, seq, slots=[SL.SlotData(0, st, (8, 5), None, "Работа"), SL.SlotData(2, _sim_profile(4), (3, 5), None, "Браузер")])
+    if kind == "other":
+        return SL.seal(me, sender(directory, "stranger").card(), seq, profile=st, tuning=(8, 3))
+    raise ValueError(kind)

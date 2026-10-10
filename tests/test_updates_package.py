@@ -64,11 +64,12 @@ def test_nothing_readable_is_left_in_the_file(keys, profile):
     assert K.inspect_header(raw)["kinds"] == ["meta", "model"]           # the header says what is inside, nothing more
 
 
-def test_a_copy_for_oneself_is_marked_and_needs_no_trust(keys):
+def test_a_package_the_device_itself_seems_to_have_made_is_refused(keys):
+    """The device makes no packages (docs/RESIDENCY.md): one that says it did can only come from stolen keys."""
     _, dev, _ = keys
     raw = K.build_package(dev, dev.card(), 1, tuning=(3, 3))
-    o = K.open_package(raw, dev)
-    assert o.is_self and K.inspect_header(raw)["self"]
+    assert K.inspect_header(raw)["self"]
+    assert err(K.open_package, raw, dev).key == "own_file"
 
 
 def test_chunk_size_changes_the_bytes_but_not_the_meaning(keys):

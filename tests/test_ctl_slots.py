@@ -8,10 +8,12 @@ from dataopen.bioprofile.profile import ProfileState
 from dataopen.ctl import manifest as M
 from dataopen.ctl import protocol as P
 from dataopen.ctl import seal as SL
+from dataopen.bioprofile.store import ProfileStore
 from dataopen.ctl.sim import SimLearner, World, seed_profile
 from dataopen.ctl.slots import SLOT_COUNT
 from dataopen.ctl.vault import Vault, VaultError
 
+from res_helpers import Clinic
 from test_ctl_gateway import err, hello, moves, never_adds, ok, state  # noqa: F401  (the same helpers, one place)
 
 pytestmark = pytest.mark.skipif(shutil.which("gcc") is None and shutil.which("cc") is None, reason="no C compiler")
@@ -323,33 +325,28 @@ def test_a_device_from_before_slots_becomes_slot_zero_with_everything_it_had(tmp
 
 
 # ---------------------------------------------------------------------------------------------------------------- the file
-def two_devices(tmp_path, tremor_dir, other_state):
-    a = world(tmp_path / "a", tremor_dir)
+def sender_slots(tmp_path, tremor_dir, other_state):
+    """A sender (a clinic) with data for two contexts, and an empty device B. The device makes no files: they only come in."""
     b = world(tmp_path / "b")
-    hello(a, b)
-    put(a, other_state, 2)
-    ok(a.phone.set("assist.strength", 8))
-    ok(a.phone.select_slot(2))
-    ok(a.phone.set("slot.name", "Браузер"))
-    ok(a.phone.set("assist.strength", 3))
-    ok(a.phone.select_slot(0))
-    return a, b
+    b.phone.connect()
+    clinic = Clinic(tmp_path)
+    mine = ProfileStore(tremor_dir / "profile").load()
+    slots = [SL.SlotData(0, mine, (8, 5), None, "Работа"), SL.SlotData(2, ProfileState.unpack(other_state.pack()), (3, 5), None, "Браузер")]
+    return b, clinic, slots
 
 
-def send_all(a, b):
-    card = b.phone.get_identity()
-    a.gw.physical_press()
-    raw = a.phone.call(P.T_GET, {"what": "bundle", "for": card, "scope": "all"})
-    assert raw.type == P.T_DATA, raw.body
-    b.gw.physical_press()
-    return raw.body, b.phone.put_bundle(raw.body)
+def send_all(b, clinic, slots, press=True):
+    raw = clinic.file(b, slots=slots)
+    if press:
+        b.gw.physical_press()
+    return raw, b.phone.put_bundle(raw)
 
 
-def test_one_file_carries_every_slot_to_another_device_by_number(tmp_path, tremor_dir, other_state):
-    a, b = two_devices(tmp_path, tremor_dir, other_state)
+def test_one_file_carries_every_slot_to_a_device_by_number(tmp_path, tremor_dir, other_state):
+    b, clinic, slots = sender_slots(tmp_path, tremor_dir, other_state)
     b.gw._install_profile(ProfileState.unpack(other_state.pack()), b.t, 1)           # B already has something in slot 1
     b1 = b.gw.slotset[1].profile.load().generation
-    raw, r = send_all(a, b)
+    raw, r = send_all(b, clinic, slots)
     ok(r)
     o = SL.open_sealed(raw, b.gw.identity)
     assert [s.n for s in o.slots] == [0, 2] and o.profile is None and o.tuning is None
@@ -362,58 +359,49 @@ def test_one_file_carries_every_slot_to_another_device_by_number(tmp_path, tremo
     assert b.gw.view.profile_id == other_state.profile_id and b.gw.slot.name == "Браузер"
 
 
-def test_a_file_for_all_slots_still_needs_the_buttons_and_never_opens_elsewhere(tmp_path, tremor_dir, other_state):
-    a, b = two_devices(tmp_path, tremor_dir, other_state)
-    card = b.phone.get_identity()
-    r = a.phone.call(P.T_GET, {"what": "bundle", "for": card, "scope": "all"})
-    assert err(r) == P.E.PHYSICAL and r.json()["detail"].startswith("export:")
-    a.gw.physical_press()
-    raw = a.phone.call(P.T_GET, {"what": "bundle", "for": card, "scope": "all"}).body
+def test_a_file_for_all_slots_needs_the_button_and_never_opens_elsewhere(tmp_path, tremor_dir, other_state):
+    b, clinic, slots = sender_slots(tmp_path, tremor_dir, other_state)
+    raw, r = send_all(b, clinic, slots, press=False)
+    assert err(r) == P.E.PHYSICAL and r.json()["detail"] == f"trust:{clinic.id}"                    # B does not know the sender yet
+    assert not b.gw.slotset.mask()
     c = world(tmp_path / "c")
     c.phone.connect()
     c.gw.physical_press()
     assert err(c.phone.put_bundle(raw)) == P.E.WRONG_DEVICE and not c.gw.slotset.mask()
-    assert err(b.phone.put_bundle(raw)) == P.E.PHYSICAL                                              # B does not know the sender yet
-    assert not b.gw.slotset.mask()
-    assert err(a.phone.call(P.T_GET, {"what": "bundle", "for": "self", "scope": "some"})) == P.E.BAD_VALUE
+    assert err(b.phone.call(P.T_GET, {"what": "bundle", "for": "self", "scope": "all"})) == P.E.RESIDENT   # and a device hands out nothing
 
 
-def test_the_default_file_is_about_the_active_slot_only(tmp_path, tremor_dir, other_state):
-    a, b = two_devices(tmp_path, tremor_dir, other_state)
-    ok(a.phone.select_slot(2))
-    card = b.phone.get_identity()
-    a.gw.physical_press()
-    raw = a.phone.get_bundle(card)
+def test_a_file_without_slots_is_about_the_active_slot_only(tmp_path, tremor_dir, other_state):
+    b, clinic, _ = sender_slots(tmp_path, tremor_dir, other_state)
+    raw = clinic.file(b, profile=ProfileState.unpack(other_state.pack()), tuning=(3, 5))
     o = SL.open_sealed(raw, b.gw.identity)
     assert not o.slots and o.profile.profile_id == other_state.profile_id and o.tuning == (3, 5)
-    # B is in slot 3: that is where it lands
-    ok(b.phone.select_slot(3))
+    ok(b.phone.select_slot(3))                                                                       # B is in slot 3: it lands there
     b.gw.physical_press()
     ok(b.phone.put_bundle(raw))
     assert b.gw.slotset[3].has and b.gw.slotset[3].strength == 3 and not b.gw.slotset[0].has
 
 
-def test_all_slots_with_layouts_of_their_own_either_fit_or_say_so(tmp_path, tremor_dir, other_state):
-    a, b = two_devices(tmp_path, tremor_dir, other_state)
+def test_four_layouts_of_their_own_are_more_than_one_file_holds_so_the_sender_is_told(tmp_path, tremor_dir, other_state):
     big = M.default_manifest(2)
-    for k in range(4):
-        put(a, other_state, k) if not a.gw.slotset[k].has else None
-        a.gw._set_manifest(M.Manifest(big), k)
-    card = b.phone.get_identity()
-    a.gw.physical_press()
-    r = a.phone.call(P.T_GET, {"what": "bundle", "for": card, "scope": "all"})
-    # four 10 KB layouts are more than one message
-    assert err(r) == P.E.TOO_BIG
-    a.gw.physical_press()
-    raw = a.phone.get_bundle(card)                                                                   # the active slot alone always fits
-    assert SL.open_sealed(raw, b.gw.identity).manifest["rev"] == 2
+    st = ProfileState.unpack(other_state.pack())
+    four = [SL.SlotData(k, st, (5, 5), big, f"s{k}") for k in range(4)]
+    b = world(tmp_path / "b")
+    b.phone.connect()
+    clinic = Clinic(tmp_path)
+    with pytest.raises(SL.SealError) as e:                                                           # the sender can not even make it
+        clinic.file(b, slots=four)
+    assert e.value.key == "damaged"
+    ok(b.phone.set("assist.strength", 5))                                                            # the device is as it was
+    one = clinic.file(b, manifest=big, tuning=(5, 5))                                                # one layout alone always fits
+    assert SL.open_sealed(one, b.gw.identity).manifest["rev"] == 2
 
 
 def test_a_file_into_the_active_slot_is_the_same_trial_as_ever_and_the_slot_does_not_move(tmp_path, tremor_dir, other_state):
     """A file lands in the ACTIVE slot with assistance on: the same try-it-and-keep-it as ever."""
-    a, b = two_devices(tmp_path, tremor_dir, other_state)
+    b, clinic, slots = sender_slots(tmp_path, tremor_dir, other_state)
     ok(b.phone.set("assist.on", True))
-    _, r = send_all(a, b)
+    _, r = send_all(b, clinic, slots)
     ok(r)
     # slot 0 is active on B and got a profile
     assert b.gw.trial is not None and b.gw.active == 0

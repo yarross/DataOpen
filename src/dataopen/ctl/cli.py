@@ -58,35 +58,36 @@ def _identity(a) -> int:
     return EXIT_OK
 
 
-def _transfer(a) -> int:
-    """A profile moves from one simulated device to another through a sealed file, with the button presses the real flow needs."""
-    import tempfile
+DOC_RESIDENCY = Path(__file__).resolve().parents[3] / "docs" / "RESIDENCY.md"
 
-    from . import protocol as P
-    from .sim import World, seed_profile
-    root = Path(a.dir or tempfile.mkdtemp(prefix="dataopen-xfer-"))
-    seed_profile(root / "a", a.profile)
-    wa, wb = World(root / "a"), World(root / "b")
-    wa.phone.connect()
-    wb.phone.connect()
-    fill = lambda w: w.gw.state_tree()["profile.fill"]    # noqa: E731
-    print(f"A {wa.gw.identity.id} (profile {fill(wa)} %)    B {wb.gw.identity.id} (profile {fill(wb)} %)")
-    card = wb.phone.get_identity()
-    r = wa.phone.try_bundle(card)
-    print(f"A exports for B without the button: {r.json()['key']} ({r.json()['detail']})")
-    wa.gw.physical_press()
-    raw = wa.phone.get_bundle(card)
-    print(f"A exports for B with the button:    {len(raw)} bytes, starts {raw[:4]!r}, the profile's magic in it: {b'BIOP' in raw}")
-    r = wb.phone.put_bundle(raw)
-    print(f"B imports from an unknown sender:   {r.json()['key']} ({r.json()['detail']})")
-    wb.gw.physical_press()
-    r = wb.phone.put_bundle(raw)
-    print(f"B imports with its button:          {'accepted' if r.type == P.T_ACK else r.json()}; profile {fill(wb)} %")
-    r = wb.phone.put_bundle(raw)
-    print(f"the same file again:                {r.json()['key']}")
-    wa.gw.physical_press()
-    print(f"the file on A itself:               {wa.phone.put_bundle(raw).json()['key']}")
-    return EXIT_OK
+
+def _residency(a) -> int:
+    """The residency layer (docs/RESIDENCY.md): the rules, the closed surface, a probe on a simulated device, the document's freshness."""
+    from . import residency as RS
+    if a.what == "rules":
+        print(RS.classes_table(), "", RS.rules_table(), sep="\n")
+        return EXIT_OK
+    if a.what == "surface":
+        print(RS.surface_table(), "", RS.state_table(), sep="\n")
+        return EXIT_OK
+    if a.what == "docs":
+        path = Path(a.path) if a.path else DOC_RESIDENCY
+        if a.check:
+            ok = path.exists() and RS.doc_is_current(path)
+            print("current" if ok else f"stale: run `dataopen ctl residency docs --write` ({path})")
+            return EXIT_OK if ok else EXIT_FAILED
+        path.write_text(RS.render_doc(path.read_text(encoding="utf-8")), encoding="utf-8")
+        print(f"written: {path}")
+        return EXIT_OK
+    from .residency_probe import run_probe
+    r = run_probe()
+    print(f"asked {len(r.asked)} questions; the device said {len(r.wire)} bytes; blocked by the egress check: {r.egress_blocked}")
+    print("asking for the secret under any name:", ", ".join(f"{k}={v}" for k, v in r.refused_secret.items()))
+    print("canaries found in what the device said:", r.hits or "none")
+    print("canaries found in the files on its disk:", r.storage_hits or "none")
+    bad = bool(r.hits or r.storage_hits or any(v != 19 for v in r.refused_secret.values()))
+    print("residency: BROKEN" if bad else "residency: holds (on the simulator)")
+    return EXIT_FAILED if bad else EXIT_OK
 
 
 def _pwa_build(a) -> int:
@@ -165,10 +166,12 @@ def register(sub) -> None:
     i.add_argument("--dir", required=True)
     i.add_argument("--out", help="write the card (.docard) here")
     i.set_defaults(fn=_identity)
-    x = ss.add_parser("transfer", help="a profile moves between two simulated devices through a sealed file, with the button presses")
-    x.add_argument("--dir")
-    x.add_argument("--profile", default="tremor")
-    x.set_defaults(fn=_transfer)
+    x = ss.add_parser("residency", help="the profile and the model never leave the device: rules, surface, a probe (docs/RESIDENCY.md)")
+    x.add_argument("what", choices=["rules", "surface", "check", "docs"])
+    x.add_argument("--check", action="store_true", help="docs: is docs/RESIDENCY.md current?")
+    x.add_argument("--write", action="store_true", help="docs: regenerate the tables (the default)")
+    x.add_argument("--path", help="docs: another file")
+    x.set_defaults(fn=_residency)
     b = ss.add_parser("pwa-build", help="write the service worker's file list and the cache version into pwa/")
     b.add_argument("--root")
     b.add_argument("--check", action="store_true", help="only check that the committed files are current")

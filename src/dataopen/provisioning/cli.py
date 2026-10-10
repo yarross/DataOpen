@@ -107,7 +107,7 @@ def _simulate(a) -> int:
         o = RC.run(s)
         if a.json:
             print(json.dumps({"scenario": s.key, "first": vars(o.first), "final": vars(o.final), "computer": o.computer, "profiles_kept": o.profiles_kept,
-                              "backup_restores": o.backup_restores, "rma": o.rma, "steps": o.steps}, ensure_ascii=False))
+                              "rma": o.rma, "steps": o.steps}, ensure_ascii=False))
             continue
         print(f"{s.key}: {s.event}")
         print(f"  right away: {o.first.stage}, mouse {o.first.mouse}, video {o.first.video}, LED {o.first.led}")
@@ -115,7 +115,7 @@ def _simulate(a) -> int:
             print(f"    - {n}")
         print("  way back: " + "; ".join(t for _, t in s.procedure))
         print(f"  computer: {'needed' if o.computer else 'not needed'}; profiles: "
-              f"{'kept' if o.profiles_kept else 'back from a backup copy' if o.backup_restores else 'lost, return to the manufacturer'}")
+              f"{'kept' if o.profiles_kept else 'lost, return to the manufacturer' if o.rma else 'lost: the person calibrates again (there is no copy)'}")
     return EXIT_OK
 
 

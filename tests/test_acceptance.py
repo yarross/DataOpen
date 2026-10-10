@@ -54,8 +54,8 @@ def s01_first_run(p: Pilot) -> None:
     assert (p.rig.status().state, reason(p)) == (S_PASSTHRU, "CMD_PASSTHRU") and p.rig.route == "bridge"
     rows = p.traffic()
     assert len(rows) == 200 and mouse_is_untouched(rows) and p.rig.dropped == 0
-    # a stranger with the phone can not take anything out or wipe anything without the hand on the device
-    assert err_code(p.ph.try_bundle({"v": 1}))[0] in (P.E.BAD_BUNDLE,)
+    # a stranger with the phone can not take anything out (there is nothing to ask for) or wipe anything without the hand on the device
+    assert err_code(p.ph.call(P.T_GET, {"what": "bundle", "for": "self", "scope": "all"}))[0] == P.E.RESIDENT
     assert err_code(p.ph.act("erase.profile", True)) == (P.E.PHYSICAL, "erase")
     assert err_code(p.ph.act("pairing.forget", True))[0] == P.E.PHYSICAL
     # a phone is paired by a physical hold of CONFIRM (3-10 s); the window closes by itself
@@ -499,9 +499,9 @@ def s09_resets(p: Pilot, tmp_path) -> None:
     load_package(p, p.package(slot=2, profile=prof, tuning=(8, 2), name="Браузер"))
     apply_package(p, button=p.sender.digest.hex() not in p.gw.trust["senders"])
     small = UD.tiny_model()
-    load_package(p, K_self(p, slot=0, model=(small, UD.card_of(small, name="own", version=1))))
-    apply_package(p, button=False)
-    backup = p.ph.get_bundle()                                                                  # a copy for oneself, sealed to THIS owner
+    load_package(p, p.package(slot=0, model=(small, UD.card_of(small, name="own", version=1))))
+    apply_package(p, button=True)                                                               # weights always need the press
+    backup = p.settings_file(profile=prof, tuning=(5, 5))                                       # a file for THIS owner (made by somebody else)
     load_package(p, p.package(slot=1, tuning=(3, 3)))                                          # and a package still waiting
     owner, serial, dak, att = me.id, p.gw.device_serial, p.gw.device.se.dak_pub, p.gw.device.record.att.to_json()
     fw_files = {f.name: f.read_bytes() for f in (p.gw.dir / "fw").glob("*")}
@@ -517,7 +517,9 @@ def s09_resets(p: Pilot, tmp_path) -> None:
     assert p.ph.act("erase.profile", True).type == P.T_ACK
     assert p.gw.slotset.mask() == 0 and not list((p.gw.dir / "slots").rglob("model.*")) and p.ph.get_packages()["pending"] is None
     assert p.gw.identity.id == owner and not p.gw.trust["senders"] and p.forgets == [] and p.state()["trusted.count"] == 0
-    r = p.ph.put_bundle(backup)                                                                 # the owner's own copy still opens: profile back
+    assert err_code(p.ph.put_bundle(backup))[0] == P.E.PHYSICAL                                 # the senders are forgotten: the button again
+    p.press()
+    r = p.ph.put_bundle(backup)                                                                 # the owner is the same: the file still opens
     assert r.type == P.T_ACK and p.gw.slotset[0].has
     p.press()
     assert p.ph.act("erase.profile", True).type == P.T_ACK
@@ -560,13 +562,6 @@ def s09_resets(p: Pilot, tmp_path) -> None:
     assert mouse_is_untouched(p.traffic(50))
 
 
-def K_self(p: Pilot, **kw) -> bytes:
-    """A package from the owner to themselves (the copy that needs no button)."""
-    from dataopen.updates import package as K
-    me = p.gw.identity
-    return K.build_package(me, me.card(), me.next_seq(), **kw)
-
-
 def test_acc09_resets(tmp_path):
     p = Pilot(tmp_path)
     p.connect()
@@ -592,3 +587,7 @@ def test_a_pilot_day_in_one_directory(tmp_path):
     s07_panic_and_bypass(p)
     s08_recovery(p)
     s09_resets(p, tmp_path)
+    # and through the whole of it the profile the device learned, the profile and the weights it was given, were on the device and never left it
+    heard = p.egress()
+    assert len(p.leaks.needles) > 100 and len(heard) > 20000 and len(p.worlds) >= 2
+    assert p.leaks.hits(heard) == [] and all(w.gw.egress_blocked == 0 for w in p.worlds)

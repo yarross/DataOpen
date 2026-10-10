@@ -127,9 +127,9 @@ def test_the_profiles_survive_every_repair_of_the_software_but_not_a_dead_data_p
             assert not o.profiles_kept
         elif s.key != "supply_dead":
             assert o.profiles_kept, s.key
-    assert RC.run(next(s for s in RC.SCENARIOS if s.key == "data_dead")).backup_restores
-    # a copy sealed to this device needs this device's keys
-    assert not RC.run(next(s for s in RC.SCENARIOS if s.key == "se_dead")).backup_restores
+    # the profile never leaves a device, so there is no copy to bring it back from: an empty device is calibrated again
+    dead = RC.run(next(s for s in RC.SCENARIOS if s.key == "data_dead"))
+    assert not dead.final.profiles_kept and not hasattr(dead, "backup_restores") and dead.final.stage == "normal"
     assert RC.run(next(s for s in RC.SCENARIOS if s.key == "se_dead")).rma
 
 

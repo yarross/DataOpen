@@ -11,6 +11,7 @@ from dataopen.ctl.sim import SimLearner, World, dev_image
 from dataopen.updates import dev as UD
 from dataopen.updates import package as K
 
+from dataopen.ctl.residency_probe import Canary
 from prov_helpers import provisioned, vendor
 
 
@@ -28,11 +29,36 @@ class Pilot:
         self.kw = dict(vendor_pub=self.hsm.pub, hw_id=self.hsm.hw_id, on_forget=lambda: self.forgets.append(1), fw_confirm_s=4,
                        learner=SimLearner(minutes=5.0, seed=2, speed=240.0), trial_s=20)
         self.kw.update(kw)
+        self.worlds: list = []
         self.w = World(self.dir, **self.kw)
         self.seq = 1000
+        self.leaks = Canary()                       # the bytes of every profile and model that is put on this device, to look for in everything it says
         self.sender = UD.sender(self.tmp / "senders")
 
     # -- shortcuts
+    @property
+    def w(self):
+        return self.worlds[-1]
+
+    @w.setter
+    def w(self, world) -> None:
+        self.worlds.append(world)
+
+    def watch(self, profile=None, model=None) -> None:
+        """Remember what must never be heard from the device (docs/RESIDENCY.md)."""
+        n = len(self.leaks.needles)
+        if profile is not None:
+            self.leaks.add_bytes(f"profile{n}", profile.pack(), width=8, step=1, skip=16)
+        if model is not None:
+            self.leaks.add_bytes(f"model{n}", model, width=16, step=16, skip=64, tail=1024)
+
+    def egress(self) -> bytes:
+        """Every byte the device said to a phone, over all the restarts and replaced worlds of this device's life."""
+        out = bytearray()
+        for w in self.worlds:
+            out += w.wire
+        return bytes(out) + self.gw.read_status() + self.gw.read_info()
+
     @property
     def gw(self):
         return self.w.gw
@@ -111,11 +137,21 @@ class Pilot:
         self.w.run(1500)
         assert self.ph.confirm(True).type == P.T_ACK
         self.w.run(1500)
+        self.watch(profile=self.gw.profile_store.load())          # the profile the device learned from the person: it is theirs and stays here
 
     # -- packages (channel B), from a sender the device does not know yet
     def package(self, **kw) -> bytes:
+        self.watch(profile=kw.get("profile"), model=(kw.get("model") or (None,))[0])
         self.seq += 1
         return K.build_package(self.sender, self.gw.identity.card(), self.seq, **kw)
+
+    def settings_file(self, **kw) -> bytes:
+        """A small sealed settings file (DOBS) from the same sender, for this device. The device makes no files of its own."""
+        from dataopen.ctl import seal as SL
+        from dataopen.ctl.identity import Card
+        self.watch(profile=kw.get("profile"))
+        self.seq += 1
+        return SL.seal(self.sender, Card.from_json(self.ph.get_identity()), self.seq, **kw)
 
     # -- images (channel A), signed by the same test manufacturer that made the board
     @staticmethod

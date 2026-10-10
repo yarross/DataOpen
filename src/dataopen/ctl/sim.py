@@ -94,8 +94,9 @@ class SimLearner:
 class SimPhone:
     """Talks to a Gateway through chunks only, the way a Web Bluetooth page would."""
 
-    def __init__(self, gw: Gateway, chunk: int = 100, clock=lambda: 0) -> None:
+    def __init__(self, gw: Gateway, chunk: int = 100, clock=lambda: 0, wire: Optional[bytearray] = None) -> None:
         self.gw, self.chunk, self.clock = gw, chunk, clock
+        self.wire = wire if wire is not None else bytearray()      # every byte the device sent: chunks, statuses (residency tests scan it)
         self.reasm = P.Reassembler()
         self.inbox: list[P.Message] = []
         self.status_notes: list[P.StatusSnapshot] = []
@@ -105,9 +106,14 @@ class SimPhone:
         self.manifest: Optional[dict] = None
         self.state: dict = {}
         gw.notify = self._on_chunk
-        gw.notify_status = lambda b: self.status_notes.append(P.StatusSnapshot.unpack(b))
+        gw.notify_status = self._on_status
+
+    def _on_status(self, b: bytes) -> None:
+        self.wire += b
+        self.status_notes.append(P.StatusSnapshot.unpack(b))
 
     def _on_chunk(self, c: bytes) -> None:
+        self.wire += c
         raw = self.reasm.feed(c, self.clock())
         if raw is None:
             return
@@ -165,15 +171,6 @@ class SimPhone:
 
     def hard_bypass(self) -> P.Message:
         return self.call(P.T_HARD_BYPASS, body=b"")
-
-    def try_bundle(self, target="self") -> P.Message:
-        """`target`: 'self' or another device's card (a dict). The reply is DATA (the sealed file) or ERR."""
-        return self.call(P.T_GET, {"what": "bundle", "for": target})
-
-    def get_bundle(self, target="self") -> bytes:
-        r = self.try_bundle(target)
-        assert r.type == P.T_DATA, r.body
-        return r.body
 
     def get_identity(self) -> dict:
         r = self.call(P.T_GET, {"what": "identity"})
@@ -251,6 +248,7 @@ class World:
         self.reboots: list[str] = []
         # called with the new gateway whenever one is swapped in (the dev server re-binds its sockets)
         self.restart_hooks: list = []
+        self.wire = bytearray()                       # everything the device said to any phone, across restarts
         self.rig.module = _Ticker(self)  # type: ignore[assignment]
         self.make_gateway()
         if start:
@@ -260,7 +258,7 @@ class World:
         """(Re)start the compute-module side: the same directory, so the persisted settings and the profile come back."""
         self.gw = Gateway(self.dir, spi=self._spi, notify=lambda b: None, clock_us=lambda: self.rig.t, on_reboot=self._on_reboot,
                           **self.gw_args)
-        self.phone = SimPhone(self.gw, chunk=self.chunk, clock=lambda: self.rig.t)
+        self.phone = SimPhone(self.gw, chunk=self.chunk, clock=lambda: self.rig.t, wire=self.wire)
         self.pre = BP.pack_frame(BP.Frame(BP.LK_NOP))
         for hook in self.restart_hooks:
             hook(self.gw)

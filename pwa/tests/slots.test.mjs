@@ -42,13 +42,14 @@ test('every word of the picker exists in both languages', () => {
 });
 
 // ------------------------------------------------------------------------------------------------------------ the manifest
-test('the default manifest offers a slot name, clearing a slot, a copy of all slots and the update controls', () => {
+test('the default manifest offers a slot name, clearing a slot and the update controls, and nothing that takes data out', () => {
   const v = buildView(manifest, { 'slot.name': 'Работа', 'fw.state': 'staged', 'fw.version': 3 }, 'en');
   const all = [...walk(v.pages.flatMap((p) => p.nodes))];
   const byId = Object.fromEntries(all.map((n) => [n.id, n]));
   assert.deepEqual([byId.slot_name.kind, byId.slot_name.value, byId.slot_name.maxLen, byId.slot_name.known], ['text', 'Работа', 24, true]);
   assert.deepEqual([byId.slot_clear.kind, byId.slot_clear.confirm, byId.slot_clear.danger], ['action', 'two-step', true]);
-  assert.deepEqual([byId.export_all.op, byId.export_all.scope, byId.export.scope], ['bundle_get', 'all', 'active']);
+  assert.ok(!byId.export && !byId.export_all && !byId.export_other);                 // no copy, no 'for another device' (docs/RESIDENCY.md)
+  assert.deepEqual(all.filter((n) => n.kind === 'file').map((n) => n.op).sort(), ['bundle_put', 'card_get', 'fw_put', 'pkg_put']);
   assert.deepEqual([byId.fw_put.op, byId.fw_put.accept], ['fw_put', '.dofw']);
   assert.equal(byId.fw_state.text, 'Loaded, waiting to be applied');
   assert.equal(byId.fw_version.text, '3');
@@ -171,17 +172,18 @@ test('it gives up after a few silent pieces instead of waiting for ever', async 
   await assert.rejects(() => s.putFirmware(image(100), () => {}, { retries: 2, pieceTimeoutMs: 30 }), (e) => e instanceof SessionError);
 });
 
-test('selecting a slot and asking for all slots are plain requests; the scope goes through unchanged', async () => {
+test('selecting a slot is a plain request; asking the device for a copy of a slot is not a request at all', async () => {
   const dev = new FwDevice();
   const s = await connect(dev);
   await s.selectSlot(2);
   assert.deepEqual(bodyJson(dev.messages.at(-1)), { key: 'slot.active', value: 2 });
   assert.equal(dev.messages.at(-1).type, T.SET);
-  dev.answer = (m) => dev.send(packMessage(T.DATA, m.req, new Uint8Array([1, 2, 3])));
-  await s.getBundle('self', 'all');
-  assert.deepEqual(bodyJson(dev.messages.at(-1)), { what: 'bundle', for: 'self', scope: 'all' });
-  await s.getBundle('self');
-  assert.equal(bodyJson(dev.messages.at(-1)).scope, 'active');
+  const sent = dev.messages.length;
+  assert.equal(typeof s.getBundle, 'undefined');
+  for (const what of ['bundle', 'profile', 'model', 'weights', 'export']) {
+    await assert.rejects(s.request(T.GET, { what, for: 'self', scope: 'all' }), (e) => e.code === ERR.RESIDENT);
+  }
+  assert.equal(dev.messages.length, sent);                                         // nothing was written to the device for any of them
 });
 
 test('the new device errors have words and the detail picks the right ones', () => {

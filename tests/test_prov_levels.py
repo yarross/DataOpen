@@ -8,9 +8,8 @@ from dataopen.ctl import protocol as P
 from dataopen.ctl.identity import Card
 from dataopen.ctl.sim import World, seed_profile
 from dataopen.provisioning import records as R
-from dataopen.provisioning import station as ST
-from dataopen.updates import package as K
 from prov_helpers import provisioned, vendor
+from res_helpers import Clinic, profile_of  # noqa: F401
 import pkg_helpers as H
 
 from test_ctl_gateway import err, ok
@@ -50,11 +49,12 @@ def fill(w, state):
     ok(ph.confirm(True))
     w.gw.trust["senders"]["ab" * 8] = {"id": "ABCD-EFGH", "last_seq": 4}
     w.gw._save_trust()
-    me = w.gw.identity
+    giver = Clinic(w.dir.parent, "giver")
     for k in (0, 2):                                        # a model in the active slot and in another one
-        w.phone.pkg_send(K.build_package(me, me.card(), me.next_seq(), slot=k, model=(MODEL, CARD)))
+        w.phone.pkg_send(giver.package(w, slot=k, model=(MODEL, CARD)))
+        w.gw.physical_press(w.t)                            # weights always need the press (the first time it also makes the sender known)
         ok(ph.act("pkg.apply", True))
-    w.phone.pkg_send(K.build_package(me, me.card(), me.next_seq(), slot=1, tuning=(3, 3)))      # and one more, still waiting
+    w.phone.pkg_send(giver.package(w, slot=1, tuning=(3, 3)))      # and one more, still waiting
     return ph
 
 
@@ -142,64 +142,25 @@ def test_a_device_that_was_not_provisioned_has_no_serial_and_a_plain_card(tmp_pa
 def test_a_factory_reset_gives_a_new_owner_number_and_the_same_device(tmp_path, state):
     w = device_world(tmp_path, state)
     ph = fill(w, state)
-    copy = ph.get_bundle("self")
+    copy = Clinic(tmp_path, "clinic").file(w, profile=ProfileState.unpack(state.pack()), tuning=(5, 5))     # a file made for the old owner
     old_id = w.gw.identity.id
     apply_level(w, 3)
     assert w.gw.identity.id != old_id and w.forgets == [1]                                     # new owner, phones forgotten
     card = w.gw.identity.card()
     # the same device vouches for the new owner
     assert R.verify_chain(Card.from_json(card.to_json()), w.hsm.pub, w.hsm.hw_id) == w.rep.serial
-    assert err(ph.put_bundle(copy)) == P.E.WRONG_DEVICE                                         # and an old backup copy is dead
+    assert err(ph.put_bundle(copy)) == P.E.WRONG_DEVICE                                         # and a file made for the old owner is dead
     assert w.gw.slotset.mask() == 0 and not w.gw.settings.assist_wanted
 
 
-def test_clearing_the_profiles_keeps_the_owner_and_the_phones(tmp_path, state):
+def test_clearing_the_profiles_keeps_the_owner_and_the_phones_but_forgets_the_senders(tmp_path, state):
     w = device_world(tmp_path, state)
     ph = fill(w, state)
-    copy = ph.get_bundle("self")
+    clinic = Clinic(tmp_path, "clinic")
+    copy = clinic.file(w, profile=ProfileState.unpack(state.pack()), tuning=(5, 5))
     apply_level(w, 2)
     assert w.forgets == [] and w.gw.slotset.mask() == 0
-    # the owner's own copy still opens: the profile comes back
-    assert ok(ph.put_bundle(copy))["ok"]
-
-
-# ------------------------------------------------------------------------------------------------------------- attested cards
-def other_card(tmp_path, hsm, name="other", signer=None):
-    d, h, rep = provisioned(tmp_path, name, hsm=hsm, **({"images": ST.Images.dev(signer=signer)} if signer else {}))
-    ag = ST.DeviceAgent(d, hw_id=hsm.hw_id, vendor_pub=hsm.pub)
-    cj = ag.owner().card().to_json()
-    cj["device"] = ag.cert().to_json()
-    return cj
-
-
-def test_a_device_that_requires_attestation_makes_files_only_for_genuine_cards(tmp_path, state):
-    hsm = vendor()[0]
-    w = device_world(tmp_path, state, hsm=hsm, require_attested=True)
-    fill(w, state)
-    ph = w.phone
-    genuine = other_card(tmp_path, hsm)
+    # the owner is the same, so a file made for it still opens; but the senders are forgotten, so the sender needs the button again
+    assert err(ph.put_bundle(copy)) == P.E.PHYSICAL
     w.gw.physical_press(w.t)
-    # a genuine card of this manufacturer: allowed (with the button)
-    assert ph.get_bundle(genuine)[:4] == b"DOBS"
-    plain = ST.DeviceAgent(tmp_path / "plain", hw_id=hsm.hw_id, vendor_pub=hsm.pub).owner().card().to_json()
-    w.gw.physical_press(w.t)
-    r = ph.try_bundle(plain)
-    # refused, and the press is not spent
-    assert err(r) == P.E.BAD_BUNDLE and r.json()["detail"] == "card_unattested" and w.gw.physical_until > w.t
-    from cryptography.hazmat.primitives.asymmetric import ed25519
-    evil = ed25519.Ed25519PrivateKey.generate()
-    forged = other_card(tmp_path, ST.VendorHsm(evil), "forged", signer=evil)                     # a real device of ANOTHER manufacturer
-    r = ph.try_bundle(forged)
-    assert err(r) == P.E.BAD_BUNDLE and r.json()["detail"] == "card_unattested"
-    # a genuine certificate on somebody else's keys
-    stolen = dict(plain, device=genuine["device"])
-    r = ph.try_bundle(stolen)
-    assert err(r) == P.E.BAD_BUNDLE and r.json()["detail"] == "card_unattested"
-
-
-def test_by_default_cards_without_attestation_still_work(tmp_path, state):
-    hsm = vendor()[0]
-    w = device_world(tmp_path, state, hsm=hsm)
-    ph = fill(w, state)
-    plain = ST.DeviceAgent(tmp_path / "plain", hw_id=hsm.hw_id, vendor_pub=hsm.pub).owner().card().to_json()
-    assert err(ph.try_bundle(plain)) == P.E.PHYSICAL                                              # as before: only the button is missing
+    assert ok(ph.put_bundle(copy))["ok"] and w.gw.slotset[0].has

@@ -234,8 +234,8 @@ def test_content_the_device_will_not_keep_is_refused_at_the_end_not_stored(tmp_p
     me = w.gw.card = w.gw.identity.card()
     cases = {
         "not_ui_model": (MODEL, dict(CARD, classes=["person"])),
-        "bad_model": (H.tiny_model(op="Gemm"), None),
-        "bad_model ": (H.tiny_model(external=True), None),
+        "model_ops": (H.tiny_model(op="Gemm"), None),
+        "model_files": (H.tiny_model(external=True), None),
     }
     seq = 0
     for want, (raw, card) in cases.items():

@@ -135,6 +135,18 @@ def default_manifest(rev: int = 1) -> dict:
                  "label": L("Модель значков в слоте", "Icon model in this slot")},
                 {"id": "model_revert", "type": "action", "key": "pkg.revert", "confirm": "two-step",
                  "label": L("Вернуть прежнюю модель", "Previous model")},
+                {"id": "model_from", "type": "status", "key": "model.from",
+                 "label": L("Модель принесена отправителем (номер)", "Model brought by sender (number)")},
+                {"id": "model_clear", "type": "action", "key": "model.clear", "confirm": "two-step",
+                 "label": L("Убрать модель из слота", "Remove the model from this slot"),
+                 "help": L("Профиль и настройки слота остаются. Кнопка на устройстве не нужна: помощь становится проще, а не опаснее.",
+                           "The profile and settings of the slot stay. No button needed: it only takes capability away.")},
+                {"id": "trust_clear", "type": "action", "key": "trust.clear", "confirm": "two-step", "danger": True,
+                 "label": L("Забыть доверенных отправителей", "Forget trusted senders"),
+                 "help": L("Следующий пакет от любого отправителя снова спросит кнопку. Модели и профили в слотах остаются. "
+                           "Нужна кнопка на устройстве.",
+                           "The next package from any sender asks for the button again. Models and profiles in the slots stay. "
+                           "Needs the button on the device.")},
                 {"id": "forget", "type": "action", "key": "pairing.forget", "confirm": "two-step", "danger": True,
                  "label": L("Забыть все телефоны", "Forget all phones"),
                  "help": L("Потребуется нажать кнопку на самом устройстве.", "You will need to press the button on the device itself.")},

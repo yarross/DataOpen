@@ -81,6 +81,7 @@ def test_build_inspect_verify_check_model_round_trip(tmp_path, capsys):
     model.write_bytes(H.tiny_model())
     out = tmp_path / "p.dopk"
     assert run("check-model", str(model)) == 0 and json.loads(capsys.readouterr().out)["ok"]
+    assert run("sender", "init", "--dir", str(tmp_path / "s")) == 0
     assert run("build-package", "--to", str(card), "--sender-dir", str(tmp_path / "s"), "--out", str(out), "--slot", "2", "--tuning", "7,3",
                "--name", "Работа", "--model", str(model), "--model-name", "icons", "--min-fw", "1") == 0
     assert "written" in capsys.readouterr().out and out.read_bytes()[:4] == b"DOPK"
@@ -104,8 +105,11 @@ def test_the_tools_refuse_what_the_device_would_refuse(tmp_path, capsys):
     card.write_text(json.dumps(dev.card().to_json()), encoding="utf-8")
     bad = tmp_path / "bad.onnx"
     bad.write_bytes(H.tiny_model(op="Gemm"))
-    assert run("check-model", str(bad)) == 1 and "refused" in capsys.readouterr().out
+    assert run("check-model", str(bad)) == 1 and "refused: model_ops" in capsys.readouterr().out
     out = tmp_path / "p.dopk"
+    assert run("build-package", "--to", str(card), "--sender-dir", str(tmp_path / "s"), "--out", str(out), "--tuning", "1,1") == 2
+    assert "sender init" in capsys.readouterr().out and not out.exists()
+    assert run("sender", "init", "--dir", str(tmp_path / "s")) == 0
     assert run("build-package", "--to", str(card), "--sender-dir", str(tmp_path / "s"), "--out", str(out), "--model", str(bad)) == 2
     assert not out.exists()                                                       # a model the device would refuse is not sealed
     assert run("build-package", "--to", str(card), "--sender-dir", str(tmp_path / "s"), "--out", str(out), "--tuning", "1") == 2

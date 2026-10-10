@@ -109,6 +109,15 @@ class ModelStore:
                 os.replace(tmp, self._p(b))
         return True
 
+    def clear(self) -> bool:
+        """Take the model out of the slot, the previous generation too. The profile, the tuning and the layout of the slot stay."""
+        gone = False
+        for name in ("model.bin", "model.json", "model.prev.bin", "model.prev.json", "model.bin.swap", "model.json.swap", "model.bin.tmp", "model.json.tmp"):
+            if self._p(name).exists():
+                self._p(name).unlink()
+                gone = True
+        return gone
+
     def state(self, fw_version: int) -> str:
         m = self.info()
         if m is None:
@@ -309,6 +318,25 @@ class PackageManager:
             raise UpdateError("B", "no_previous", "there is no previous model in this slot")
         self.touch()
 
+    def clear_model(self) -> None:
+        """`model.clear`: the slot's model (and the one before it) goes; everything else in the slot stays. Taking capability away is free."""
+        if self.gw.calibrating:
+            raise Refusal(P.E.BUSY, "calibrating")
+        if not ModelStore(self.gw.slot).clear():
+            raise UpdateError("B", "no_model", "there is no model in this slot")
+        self.touch()
+
+    def forget_senders(self, now: int) -> None:
+        """`trust.clear`: every sender the device trusted is forgotten (with the sequence numbers seen from them); a pending package from one
+        of them asks for the button again. Models and profiles already in the slots are NOT touched: removing those is `model.clear` / `slot.clear`."""
+        gw = self.gw
+        if not gw.trust["senders"]:
+            raise UpdateError("B", "no_senders", "no sender is trusted")
+        gw._need_button(now, "trust.clear")
+        gw.trust["senders"].clear()
+        gw._save_trust()
+        self.touch()
+
     def erase(self) -> None:
         """Personal data goes with everything else: the reception, the pending package and the marker (models live in the slots)."""
         self._drop_reception()
@@ -324,7 +352,8 @@ class PackageManager:
             card = (ms.info() or {}).get("card") or {}
             self._cache = (key, {"pkg.from": sm["from"] if sm else "", "pkg.kinds": ",".join(sm["kinds"]) if sm else "",
                                  "pkg.pending": sm is not None, "model.state": ms.state(self._fw_version()), "model.name": card.get("name", ""),
-                                 "model.version": int(card.get("version", 0))})
+                                 "model.version": int(card.get("version", 0)),
+                                 "model.from": "" if ms.info() is None or ms.info().get("self") else str(ms.info().get("from", ""))})
         c = dict(self._cache[1])
         pending = c.pop("pkg.pending")
         return {"pkg.state": "receiving" if self.reader is not None else ("pending" if pending else "none"), **c}

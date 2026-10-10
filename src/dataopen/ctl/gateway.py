@@ -887,7 +887,7 @@ class Gateway:
             self._fw_apply(now)
         elif key == "fw.rollback":
             self._fw_rollback(now)
-        elif key in ("pkg.apply", "pkg.discard", "pkg.revert"):
+        elif key in ("pkg.apply", "pkg.discard", "pkg.revert", "model.clear", "trust.clear"):
             self._pkg_act(key, now)
         else:
             raise _Refuse(P.E.BAD_KEY, key)
@@ -1080,6 +1080,10 @@ class Gateway:
                 self.pkg.apply(now)
             elif key == "pkg.discard":
                 self.pkg.discard()
+            elif key == "model.clear":
+                self.pkg.clear_model()
+            elif key == "trust.clear":
+                self.pkg.forget_senders(now)
             else:
                 self.pkg.revert(now)
         except UpdateError as e:

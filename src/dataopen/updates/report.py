@@ -6,6 +6,7 @@ from pathlib import Path
 
 from ..ctl import firmware as FW
 from . import channels as C
+from . import models as MD
 from . import package as K
 
 
@@ -85,8 +86,38 @@ def reasons_b() -> str:
     return _reasons("B")
 
 
+def abi_table() -> str:
+    a = MD.ABI
+    rows = (("версия контракта", f"`ABI v{a['version']}`; файл ONNX, один, без внешних данных"),
+            ("таксономия", f"`{a['taxonomy']}`: классы строго из {len(a['classes'])} интерфейсных (" + ", ".join(f"`{c}`" for c in a["classes"]) + "); ключевых точек нет"),
+            ("вход", f"один, кадр {a['input_size']}×{a['input_size']}: " + " или ".join(f"`{c}`" for c in a["conventions"])),
+            ("выходы", f"ровно {MD.N_OUT}, `p3`, `p4`, `p5`: [N, число_классов + 4, {MD.INPUT_SIZE}/s, {MD.INPUT_SIZE}/s] для s = " + ", ".join(str(x) for x in MD.STRIDES)),
+            ("число классов", "= число классов в метаданных `ui_layout` = число в карточке пакета (метаданные не могут врать о голове)"),
+            ("операторы", ", ".join(f"`{o}`" for o in a["ops"]) + "; только стандартный набор (`ai.onnx`), без подграфов"),
+            ("opset", f"{a['opset'][0]}…{a['opset'][1]}"),
+            ("размер", f"до {a['max_bytes'] // (1024 * 1024)} МиБ"),
+            ("узлы", f"до {a['max_nodes']}"),
+            ("вычисления", f"до {a['max_macs'] / 1e9:g} GMAC по статическим формам (допущение, не измерение; у UiNet около 1)"))
+    return "\n".join([_row("что", "правило"), _row("---", "---")] + [_row(f"**{k}**", v) for k, v in rows])
+
+
+MODEL_RULES = (("для этого устройства", "пакет запечатан под Device Public ID; чужой отвергается по заголовку, до данных", "`wrong_device`"),
+               ("от известного отправителя", "подпись Ed25519; новый отправитель требует кнопки (`trust:<ID>`)", "`bad_signature`, `physical`"),
+               ("каждая модель с кнопкой", "веса принимаются только после нажатия (`model:<ID>`), даже от доверенного", "`physical`"),
+               ("только интерфейс", "классы из таксономии `ui-v1`; людей, позы, «игроков», ключевые точки нет", "`not_ui_model`"),
+               ("только данные", "белый список операторов; нет внешних файлов, чужих доменов, подграфов", "`model_ops`, `model_files`"),
+               ("контракт входа/выходов", "форма, тип и число выходов как у `UiNet`", "`model_io`"),
+               ("по размеру и цене", "до 16 МиБ, до 2000 узлов, до 4 GMAC", "`too_large`, `model_cost`"),
+               ("потом остаётся на устройстве", "модель лежит под ключом слота; наружу не выходит (карточка без весов)", "—"),
+               ("не код", "исполняемого кода, скриптов, внешних данных и каталога моделей нет", "—"))
+
+
+def model_rules_table() -> str:
+    return "\n".join([_row("правило", "как проверяется", "отказ"), _row(*["---"] * 3)] + [_row(f"**{a}**", b, c) for a, b, c in MODEL_RULES])
+
+
 TABLES = {"channels": channels_table, "policy": policy_table, "invariants": invariants_table, "format_a": format_a_table, "format_b": format_b_table,
-          "parts": parts_table, "reasons_a": reasons_a, "reasons_b": reasons_b}
+          "parts": parts_table, "reasons_a": reasons_a, "reasons_b": reasons_b, "abi": abi_table, "model_rules": model_rules_table}
 _BLOCK = re.compile(r"(<!-- fp:(\w+) -->)\n?(.*?)\n?(<!-- /fp:\2 -->)", re.S)
 
 
@@ -94,6 +125,13 @@ def render_doc(text: str) -> str:
     return _BLOCK.sub(lambda m: m.group(1) + "\n" + TABLES[m.group(2)]() + "\n" + m.group(4), text)
 
 
+MODEL_TABLES = ("abi", "model_rules")            # these two live in docs/MODELS.md, the rest in docs/UPDATES.md
+
+
+def expected_tables(path: Path) -> set:
+    return set(MODEL_TABLES) if path.name == "MODELS.md" else set(TABLES) - set(MODEL_TABLES)
+
+
 def doc_is_current(path: Path) -> bool:
     text = path.read_text(encoding="utf-8")
-    return render_doc(text) == text and set(m.group(2) for m in _BLOCK.finditer(text)) == set(TABLES)
+    return render_doc(text) == text and set(m.group(2) for m in _BLOCK.finditer(text)) == expected_tables(path)

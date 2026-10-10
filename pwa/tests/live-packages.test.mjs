@@ -113,3 +113,43 @@ test('a loaded package can be dropped without a trace', { skip }, async () => {
   assert.equal((await s.getPackages()).pending, null);
   s.close();
 });
+
+test('a model the device will not take is refused with its own reason, nothing is kept, nobody becomes trusted', { skip }, async () => {
+  const s = await open();
+  for (const [kind, key] of [['ops', 'model_ops'], ['files', 'model_files'], ['io', 'model_io'], ['heavy', 'model_cost'], ['pose', 'not_ui_model']]) {
+    await assert.rejects(async () => s.putPackage(await make(kind, next(), 0)), reason(key), kind);
+    const info = await s.getPackages();
+    assert.equal(info.pending, null, kind);
+    assert.equal(info.upload, null, kind);
+  }
+  s.close();
+});
+
+test('a model can be taken out of the slot by itself, with no button, and the number of who brought it is shown', { skip }, async () => {
+  const s = await open();
+  await s.selectSlot(0);
+  await s.putPackage(await make('model', next(), 0));
+  await press();
+  await s.act('pkg.apply', true);
+  await until(() => s.state['model.state'] === 'ok', 3000, 'the model state');
+  assert.match(s.state['model.from'], /^[0-9A-Z]{4}(-[0-9A-Z]{4}){3}$/);
+  await assert.rejects(() => s.act('model.clear', false), (e) => e.code === ERR.NOT_ALLOWED);          // two steps: the first only asks
+  await s.act('model.clear', true);
+  await until(() => s.state['model.state'] === 'none', 3000, 'no model');
+  assert.equal(s.state['model.from'], '');
+  assert.equal((await s.getPackages()).models[0].previous, false);                                  // the previous copy went with it
+  await assert.rejects(() => s.act('model.clear', true), reason('no_model'));
+  s.close();
+});
+
+test('forgetting the trusted senders needs the button, and the next package asks again', { skip }, async () => {
+  const s = await open();
+  await assert.rejects(() => s.act('trust.clear', true), (e) => e.code === ERR.PHYSICAL && e.detail === 'trust.clear');
+  await press();
+  await s.act('trust.clear', true);
+  await until(() => s.state['trusted.count'] === 0, 3000, 'no trusted sender');
+  await s.putPackage(await make('tuning', next(), 3));
+  await assert.rejects(() => s.act('pkg.apply', true), (e) => e.code === ERR.PHYSICAL && String(e.detail).startsWith('trust:'));
+  await s.act('pkg.discard', false);
+  s.close();
+});

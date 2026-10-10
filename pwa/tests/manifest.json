@@ -433,6 +433,44 @@
           }
         },
         {
+          "id": "model_from",
+          "type": "status",
+          "key": "model.from",
+          "label": {
+            "ru": "Модель принесена отправителем (номер)",
+            "en": "Model brought by sender (number)"
+          }
+        },
+        {
+          "id": "model_clear",
+          "type": "action",
+          "key": "model.clear",
+          "confirm": "two-step",
+          "label": {
+            "ru": "Убрать модель из слота",
+            "en": "Remove the model from this slot"
+          },
+          "help": {
+            "ru": "Профиль и настройки слота остаются. Кнопка на устройстве не нужна: помощь становится проще, а не опаснее.",
+            "en": "The profile and settings of the slot stay. No button needed: it only takes capability away."
+          }
+        },
+        {
+          "id": "trust_clear",
+          "type": "action",
+          "key": "trust.clear",
+          "confirm": "two-step",
+          "danger": true,
+          "label": {
+            "ru": "Забыть доверенных отправителей",
+            "en": "Forget trusted senders"
+          },
+          "help": {
+            "ru": "Следующий пакет от любого отправителя снова спросит кнопку. Модели и профили в слотах остаются. Нужна кнопка на устройстве.",
+            "en": "The next package from any sender asks for the button again. Models and profiles in the slots stay. Needs the button on the device."
+          }
+        },
+        {
           "id": "forget",
           "type": "action",
           "key": "pairing.forget",

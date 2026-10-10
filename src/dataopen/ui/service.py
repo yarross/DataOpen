@@ -25,14 +25,17 @@ from .taxonomy import NAMES, require_ui_layout  # noqa: F401
 
 
 class OrtUiDetector:
-    """The exported ONNX model. Refuses a file whose class list is not the UI taxonomy or that declares keypoints."""
+    """The exported ONNX model. Refuses a file whose class list is not the UI taxonomy or that declares keypoints. `path` may also be the
+    model's BYTES: a model that lives on the device in a slot is built from memory, never written back in the clear (ui/resident.py)."""
 
-    def __init__(self, path: str | Path, conf: float = 0.35, threads: int = 2) -> None:
+    def __init__(self, path: str | Path | bytes, conf: float = 0.35, threads: int = 2) -> None:
         import onnxruntime as ort
 
         so = ort.SessionOptions()
         so.intra_op_num_threads = threads
-        self.sess = ort.InferenceSession(str(path), so, providers=["CPUExecutionProvider"])
+        self.sess = ort.InferenceSession(path if isinstance(path, bytes) else str(path), so,
+                                        providers=["CPUExecutionProvider"])
+        path = "<memory>" if isinstance(path, bytes) else path
         meta = self.sess.get_modelmeta().custom_metadata_map
         if "ui_layout" not in meta:
             raise ValueError(f"{path}: not a UI-element model (no ui_layout metadata)")

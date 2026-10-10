@@ -95,7 +95,7 @@ RULES_BY_ID = {r.id: r for r in RULES}
 # ---------------------------------------------------------------------------------------------------------------- the closed surface
 SET_KEYS = ("assist.on", "assist.strength", "tremor.level", "calib.running", "slot.name", "slot.active")
 ACT_KEYS = ("profile.restore", "pairing.forget", "erase.profile", "factory.reset", "slot.clear", "fw.apply", "fw.rollback",
-            "pkg.apply", "pkg.discard", "pkg.revert")
+            "pkg.apply", "pkg.discard", "pkg.revert", "model.clear", "trust.clear")
 FILE_OPS_IN, FILE_OPS_OUT, FILE_OPS = P.FILE_OPS_IN, P.FILE_OPS_OUT, P.FILE_OPS     # files go IN; the device hands out only its public card
 OUTGOING_TYPES = (P.T_HELLO_R, P.T_DATA, P.T_ACK, P.T_ERR, P.T_EVENT, P.T_PONG)
 INCOMING_TYPES = (P.T_HELLO, P.T_GET, P.T_SET, P.T_ACT, P.T_CONFIRM, P.T_STOP, P.T_HARD_BYPASS, P.T_BUNDLE_PUT, P.T_FW_BEGIN, P.T_FW_CHUNK,
@@ -119,7 +119,7 @@ class ResidencyViolation(Exception):
 _SLOT_KEY = re.compile(rf"^slot\.[0-{P.SLOT_COUNT - 1}]\.name$")
 STATE_KEYS = ("assist.on", "assist.strength", "tremor.level", "calib.running", "profile.fill", "profile.layers", "profile.tremor",
               "device.id", "device.serial", "trusted.count", "trial.left_s", "pairing.open", "slot.active", "slot.name", "fw.version",
-              "fw.state", "pkg.state", "pkg.from", "pkg.kinds", "model.state", "model.name", "model.version")
+              "fw.state", "pkg.state", "pkg.from", "pkg.kinds", "model.state", "model.name", "model.version", "model.from")
 PROFILE_LAYERS = ("none", "asc", "tremor", "both")            # the only values a derived profile field can have
 PROFILE_TREMOR = ("collecting", "ready", "not_needed")
 FW_STATES = ("unsupported", "current", "staged", "trial")

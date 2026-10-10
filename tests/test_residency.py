@@ -72,7 +72,7 @@ def test_the_surface_is_pinned_so_that_adding_to_it_is_a_decision(tmp_path):
     assert P.GET_KINDS == RS_EXPECTED_GET
     assert RS.SET_KEYS == ("assist.on", "assist.strength", "tremor.level", "calib.running", "slot.name", "slot.active")
     assert RS.ACT_KEYS == ("profile.restore", "pairing.forget", "erase.profile", "factory.reset", "slot.clear", "fw.apply", "fw.rollback",
-                           "pkg.apply", "pkg.discard", "pkg.revert")
+                           "pkg.apply", "pkg.discard", "pkg.revert", "model.clear", "trust.clear")
     assert P.FILE_OPS_IN == ("bundle_put", "fw_put", "pkg_put") and P.FILE_OPS_OUT == ("card_get",)
     names = {v: k for k, v in P.TYPES.items()}
     assert sorted(names[t] for t in RS.OUTGOING_TYPES) == ["ACK", "DATA", "ERR", "EVENT", "HELLO_R", "PONG"]
@@ -460,13 +460,13 @@ def test_no_code_in_the_device_hands_the_secret_to_a_message():
     gw = (SRC / "ctl" / "gateway.py").read_text(encoding="utf-8")
     for needle in ("SL.seal(", ".seal(self.identity", "_export_bundle", "_seal_or_refuse", "GET_BUNDLE", "bundle_get", "bundle_for_card"):
         assert needle not in gw, needle
-    # nobody reads the weights for anything but running the model, and the model is not run yet: there is no call site at all
+    # nobody reads the weights for anything but running the model: exactly one call site, the loader that builds the detector in memory
     calls = []
     for p in SRC.rglob("*.py"):
         for i, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
             if re.search(r"\.weights\(\)", line) and not line.lstrip().startswith(("#", '"""')):
                 calls.append(f"{p.relative_to(ROOT)}:{i}")
-    assert calls == []
+    assert [c.rsplit(":", 1)[0] for c in calls] == ["src/dataopen/ui/resident.py"], calls
     # no source file of the device names an operation that returns the secret
     for p in SRC.rglob("*.py"):
         text = p.read_text(encoding="utf-8")

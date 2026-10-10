@@ -30,12 +30,12 @@ def _load_identity(directory: str):
 
 def _build(a) -> int:
     from ..ctl.identity import Card
-    from . import dev
     from . import models as MD
     from . import package as K
+    from . import sender as SD
     try:
         card = Card.from_json(json.loads(Path(a.to).read_text(encoding="utf-8")))
-        me = dev.sender(a.sender_dir, a.sender_name)
+        me = SD.require(a.sender_dir, a.sender_name)
         tuning = tuple(int(x) for x in a.tuning.split(",")) if a.tuning else None
         if tuning is not None and len(tuning) != 2:
             raise ValueError("--tuning is STRENGTH,TREMOR")
@@ -51,6 +51,8 @@ def _build(a) -> int:
         return EXIT_USAGE
     Path(a.out).write_bytes(pkg)
     print(f"written: {a.out} ({len(pkg)} bytes) for {card.id} from {me.id}")
+    if model:
+        print(f"the device will ask for its button: {'trust:' + me.id} (once, for a new sender) and model:{me.id} (every model)")
     return EXIT_OK
 
 
@@ -90,21 +92,48 @@ def _check_model(a) -> int:
         return EXIT_USAGE
     except C.UpdateError as e:
         print(f"refused: {e.key}: {e}")
+        r = C.reason("B", e.key)
+        print(f"  {r.en}\n  to do: {r.do}")
         return EXIT_FAILED
-    print(json.dumps({"ok": True, "ops": found["ops"], "opset": found["opset"], "size": len(raw)}, indent=2))
+    print(json.dumps({"ok": True, "ops": found["ops"], "opset": found["opset"], "size": len(raw), "nodes": found["nodes"],
+                      "gmacs": round(found["macs"] / 1e9, 3), "input": found["convention"], "outputs": found["outputs"],
+                      "limits": {"max_gmacs": MD.MAX_MACS / 1e9, "max_nodes": MD.MAX_NODES, "max_bytes": MD.MODEL_MAX}}, indent=2))
+    return EXIT_OK
+
+
+def _abi(a) -> int:
+    from . import models as MD
+    print(json.dumps(MD.ABI, ensure_ascii=False, indent=2) if a.json else RP.abi_table())
+    return EXIT_OK
+
+
+def _sender(a) -> int:
+    from . import sender as SD
+    try:
+        me = SD.init(a.dir, a.name) if a.sender_cmd == "init" else SD.require(a.dir, a.name)
+    except (SD.SenderError, OSError) as e:
+        print(f"error: {e}")
+        return EXIT_USAGE
+    print(json.dumps(SD.describe(me), ensure_ascii=False, indent=2))
+    if a.sender_cmd == "init":
+        print("Keep the key file private. The device asks its owner to press its button for this ID the first time (docs/MODELS.md).")
     return EXIT_OK
 
 
 def _docs(a) -> int:
-    path = Path(a.path) if a.path else DOC
+    paths = [Path(a.path)] if a.path else [DOC, DOC.with_name("MODELS.md")]
+    paths = [p for p in paths if p.exists()]
     if a.check:
-        if not RP.doc_is_current(path):
-            print(f"{path} is stale: run `dataopen update docs --write`")
+        stale = [p for p in paths if not RP.doc_is_current(p)]
+        for p in stale:
+            print(f"{p} is stale: run `dataopen update docs --write`")
+        if stale:
             return EXIT_FAILED
         print("current")
         return EXIT_OK
-    path.write_text(RP.render_doc(path.read_text(encoding="utf-8")), encoding="utf-8")
-    print(f"written: {path}")
+    for p in paths:
+        p.write_text(RP.render_doc(p.read_text(encoding="utf-8")), encoding="utf-8")
+        print(f"written: {p}")
     return EXIT_OK
 
 
@@ -120,9 +149,9 @@ def register(sub) -> None:
     r.add_argument("--channel", choices=["A", "B"])
     r.add_argument("--json", action="store_true")
     r.set_defaults(fn=_reasons)
-    b = ps.add_parser("build-package", help="make a package for a device's card (a test sender's keys live in --sender-dir)")
+    b = ps.add_parser("build-package", help="make a package for a device's card, signed with your sender identity (`update sender init`)")
     b.add_argument("--to", required=True, help="the receiving device's card (.docard)")
-    b.add_argument("--sender-dir", required=True)
+    b.add_argument("--sender-dir", help="where `update sender init` put the keys (default: ~/.dataopen/sender or $DATAOPEN_SENDER_DIR)")
     b.add_argument("--sender-name", default="sender")
     b.add_argument("--out", required=True)
     b.add_argument("--slot", type=int)
@@ -142,7 +171,17 @@ def register(sub) -> None:
     v.add_argument("--device-dir", required=True)
     v.add_argument("--fw-version", type=int, default=0)
     v.set_defaults(fn=_verify)
-    m = ps.add_parser("check-model", help="the structural check of a model file")
+    sd = ps.add_parser("sender", help="your own sender identity: the keys you sign packages with (kept outside the device)")
+    sds = sd.add_subparsers(dest="sender_cmd", required=True)
+    for nm, h in (("init", "make the identity (refuses to replace one)"), ("show", "print its ID: what the device shows for the button")):
+        x = sds.add_parser(nm, help=h)
+        x.add_argument("--dir", help="default: ~/.dataopen/sender or $DATAOPEN_SENDER_DIR")
+        x.add_argument("--name", default="sender")
+        x.set_defaults(fn=_sender)
+    ab = ps.add_parser("abi", help="the contract a custom UI model has to follow (ABI v1)")
+    ab.add_argument("--json", action="store_true")
+    ab.set_defaults(fn=_abi)
+    m = ps.add_parser("check-model", help="the device's check of a model file, run on your machine: the contract, the limits, the reason if refused")
     m.add_argument("file")
     m.set_defaults(fn=_check_model)
     g = ps.add_parser("docs", help="refresh (or check) the generated tables in docs/UPDATES.md")

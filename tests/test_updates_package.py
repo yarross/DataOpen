@@ -225,12 +225,12 @@ def test_a_senders_key_does_not_sign_firmware_and_the_manufacturers_does_not_mak
 # ---------------------------------------------------------------------------------------------------------------- the model check
 def test_a_model_has_to_be_the_kind_of_thing_the_ui_path_may_run():
     ok = MD.check_model(MODEL, CARD)
-    assert ok["ops"] == ["Identity"] and ok["card"]["version"] == 3
+    assert set(ok["ops"]) <= MD.ALLOWED_OPS and ok["card"]["version"] == 3 and ok["outputs"] == ["p3", "p4", "p5"]
 
 
-@pytest.mark.parametrize("kw,key", [(dict(op="Gemm"), "bad_model"), (dict(layout=None), "bad_model"), (dict(external=True), "bad_model"),
-                                    (dict(domain="com.evil"), "bad_model"), (dict(extra_domain="com.evil"), "bad_model"),
-                                    (dict(layout=dict(H.LAYOUT_OK, classes=["person"])), "bad_model"), (dict(opset=99), "bad_model")])
+@pytest.mark.parametrize("kw,key", [(dict(op="Gemm"), "model_ops"), (dict(layout=None), "bad_model"), (dict(external=True), "model_files"),
+                                    (dict(domain="com.evil"), "model_files"), (dict(extra_domain="com.evil"), "model_files"),
+                                    (dict(layout=dict(H.LAYOUT_OK, classes=["person"])), "bad_model"), (dict(opset=99), "model_ops")])
 def test_a_graph_outside_the_rules_is_refused(kw, key):
     raw = H.tiny_model(**kw)
     assert err(MD.check_model, raw, H.card_of(raw, opset=min(kw.get("opset", 13), 20))).key == key
@@ -250,7 +250,7 @@ def test_the_card_has_to_describe_the_bytes():
     assert err(MD.check_model, MODEL, None).key == "bad_model"
     assert err(MD.check_model, MODEL, dict(CARD, name="x" * 41)).key == "bad_model"
     big = bytes(MD.MODEL_MAX + 1)
-    assert err(MD.check_model, big, H.card_of(big)).key == "bad_model"
+    assert err(MD.check_model, big, H.card_of(big)).key == "too_large"
 
 
 def test_the_allowed_operators_are_the_ones_the_exporter_writes():

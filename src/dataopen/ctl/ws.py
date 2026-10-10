@@ -163,7 +163,7 @@ class SimServer:
             out = {"ok": True}
         elif target.startswith("/sim/package/"):
             # /sim/package/<kind>/<seq>[/<slot>]: a package for THIS device from a test sender
-            # (kinds: tuning, model, big, forged, other, tampered)
+            # (kinds: tuning, model, big, forged, other, tampered, and the refused models: ops, files, io, heavy, pose)
 
             from ..updates.dev import sim_package
             parts = target.split("/")
